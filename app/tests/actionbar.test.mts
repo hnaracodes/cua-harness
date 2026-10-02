@@ -1,5 +1,6 @@
 // Run: npm test. The primary button always says exactly what will run (track U4).
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { decisionHint, primaryAction, showSecondaryApproveAll } from "../src/workspace/ActionBar.logic.ts";
 
@@ -32,4 +33,11 @@ test("hint and secondary button", () => {
   assert.equal(showSecondaryApproveAll(c(3, 2)), true);
   assert.equal(showSecondaryApproveAll(c(0, 2)), false);
   assert.equal(showSecondaryApproveAll(c(3, 0)), false);
+});
+
+test("hint copy is written as whole literal strings, so a search for the spec copy finds it", () => {
+  const src = readFileSync(new URL("../src/workspace/ActionBar.logic.ts", import.meta.url), "utf8");
+  assert.ok(src.includes('"1 step still needs a decision"'), "singular hint is one literal");
+  assert.ok(src.includes("steps still need a decision`"), "plural hint is one template literal");
+  assert.equal(decisionHint(c(0, 12)), "12 steps still need a decision");
 });
