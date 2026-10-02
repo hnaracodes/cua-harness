@@ -47,7 +47,14 @@ function Row(p: { step: Step; status: StepStatus; inside: boolean; checked: bool
           </div>
         </div>
       ) : (
-        <span className={s.title} title={st.description}>{st.title}</span>
+        <>
+          <span className={s.title} title={st.description}>{st.title}</span>
+          {st.app && (
+            <span className={s.app} data-testid={`step-app-${i}`} title={`Runs in ${st.app.name} (${st.app.bundle_id})`}>
+              <AppGlyph />in {st.app.name}
+            </span>
+          )}
+        </>
       )}
       {!editing && (
         <span className={s.acts} onClick={(e) => e.stopPropagation()}>
@@ -69,5 +76,15 @@ function Row(p: { step: Step; status: StepStatus; inside: boolean; checked: bool
         </span>
       )}
     </div>
+  );
+}
+
+/** A small app-window mark: the step drives a native app, not the agent's browser. */
+function AppGlyph() {
+  return (
+    <svg className={s.appGlyph} width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+      <rect x="0.75" y="0.75" width="8.5" height="8.5" rx="2" fill="none" stroke="currentColor" strokeWidth="1.2" />
+      <path d="M0.75 3.25h8.5" stroke="currentColor" strokeWidth="1.2" />
+    </svg>
   );
 }

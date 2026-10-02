@@ -104,7 +104,7 @@ export function ChatThread({ api, messages, counts, meta, events, steps, onRetry
             return (
               <div key={m.id} className={s.progress} data-testid="chat-step-running">
                 <span className={s.spinner} />
-                {m.title}…
+                {m.title}{m.app ? ` in ${m.app}` : ""}…
               </div>
             );
           case "step_done":
@@ -175,7 +175,7 @@ function revisedText(m: Msg<"revised">): string {
 function StepRow({ m }: { m: Msg<"step_done"> }) {
   const mark = m.status === "done" ? "✓" : m.status === "failed" ? "✗" : m.status === "stopped" ? "■" : "–";
   const cls = m.status === "done" ? s.markDone : m.status === "failed" ? s.markFailed : s.markOther;
-  const meta = [`step ${m.index}`, m.actions !== null ? `${m.actions} actions` : null, m.durationMs !== null ? secs(m.durationMs) : null]
+  const meta = [`step ${m.index}`, m.app ? `in ${m.app}` : null, m.actions !== null ? `${m.actions} actions` : null, m.durationMs !== null ? secs(m.durationMs) : null]
     .filter(Boolean)
     .join(" · ");
   return (

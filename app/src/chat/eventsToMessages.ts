@@ -23,6 +23,8 @@ interface RunAcc {
   removed: StepRefPayload[];
   /** step_id → index as this run saw it (step_started / step_result payloads). */
   ran: Map<string, number>;
+  /** step_id → native app name from this run's step_started payloads. */
+  apps: Map<string, string>;
   finished: boolean;
   results: StepResultPayload[];
   running: Map<string, Msg<"step_running">>;
@@ -53,6 +55,7 @@ export function fallbackRecap(final: FinalResultPayload, results: StepResultPayl
 
 export function eventsToMessages(input: ChatInput): ChatMessage[] {
   const indexOf = new Map(input.steps.map((s) => [s.id, s.index]));
+  const appOf = new Map(input.steps.map((s) => [s.id, s.app?.name ?? null]));
   const toIndexes = (ids: string[]) =>
     ids.map((id) => indexOf.get(id)).filter((i): i is number => i !== undefined).sort((a, b) => a - b);
 
@@ -73,7 +76,7 @@ export function eventsToMessages(input: ChatInput): ChatMessage[] {
     if (!r) {
       const started: Msg<"run_started"> = { kind: "run_started", id: `run-${ev.seq}`, approvedIndexes: [], skippedIndexes: [] };
       out.push(started);
-      r = { startTs: ev.ts, started, skipped: new Set(), removed: [], ran: new Map(), finished: false, results: [], running: new Map(), costUsd: 0, actions: 0, recap: null };
+      r = { startTs: ev.ts, started, skipped: new Set(), removed: [], ran: new Map(), apps: new Map(), finished: false, results: [], running: new Map(), costUsd: 0, actions: 0, recap: null };
       runs.set(id, r);
     }
     return r;
@@ -131,7 +134,9 @@ export function eventsToMessages(input: ChatInput): ChatMessage[] {
       }
       case "step_started": {
         const sr = p as StepRefPayload;
-        const m: Msg<"step_running"> = { kind: "step_running", id: `running-${ev.seq}`, stepId: sr.step_id, index: sr.index, title: sr.title };
+        const app = sr.app ?? appOf.get(sr.step_id) ?? null;
+        if (app) r.apps.set(sr.step_id, app);
+        const m: Msg<"step_running"> = { kind: "step_running", id: `running-${ev.seq}`, stepId: sr.step_id, index: sr.index, title: sr.title, app };
         r.ran.set(sr.step_id, sr.index);
         r.running.set(sr.step_id, m);
         out.push(m);
@@ -159,6 +164,7 @@ export function eventsToMessages(input: ChatInput): ChatMessage[] {
           summary: res.summary,
           actions: res.actions ?? null,
           durationMs: res.duration_ms ?? null,
+          app: r.apps.get(res.step_id) ?? appOf.get(res.step_id) ?? null,
         });
         if (res.status === "failed")
           out.push({ kind: "notice", id: `notice-${ev.seq}`, tone: "warn", text: `Step ${res.index} failed, so the steps after it did not run.` });
