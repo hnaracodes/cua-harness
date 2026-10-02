@@ -217,3 +217,44 @@ def test_open_url_rejects_non_http(desk) -> None:
     act = [p for k, p in rec.events if k == "action"][0]
     assert act["ok"] is False and "http" in act["error"]
     assert "browser_navigate" not in [t for t, _ in r.calls]
+
+
+FRAME_GONE = json.dumps({"refusal": {"code": "browser_route_unavailable", "message":
+    "Accessibility.getFullAXTree failed: CDP Accessibility.getFullAXTree failed (-32602): "
+    "Frame with the given frameId is not found."}, "status": "refused"})
+
+
+def test_observe_rides_out_a_navigation_in_flight(desk, monkeypatch) -> None:
+    """Real failure, 2026-10-02: a link click started a navigation and the next
+    snapshot hit the old, gone frame. The desk waits, re-binds and retries."""
+    d, r = desk
+    d.retry_delays = (0, 0, 0)
+    orig = r.__call__
+    refusals = {"left": 2}
+
+    async def flaky(argv):
+        if argv[2] == "get_browser_state" and "target_id" in json.loads(argv[3]) and refusals["left"]:
+            refusals["left"] -= 1
+            r.calls.append((argv[2], json.loads(argv[3])))
+            return 1, FRAME_GONE, ""
+        return await orig(argv)
+
+    d.driver._runner = flaky
+    ws = run(d.observe())
+    assert ws.elements and refusals["left"] == 0
+    binds = [a for t, a in r.calls if t == "get_browser_state" and "target_id" not in a]
+    assert len(binds) == 3  # re-bound before each retry
+
+
+def test_observe_gives_up_after_its_retries(desk) -> None:
+    d, r = desk
+    d.retry_delays = (0, 0, 0)
+
+    async def always_gone(argv):
+        if argv[2] == "get_browser_state" and "target_id" in json.loads(argv[3]):
+            return 1, FRAME_GONE, ""
+        return await FakeBrowserRunner.__call__(r, argv)
+
+    d.driver._runner = always_gone
+    with pytest.raises(CuaDriverError):
+        run(d.observe())

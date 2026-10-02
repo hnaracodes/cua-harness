@@ -118,6 +118,12 @@ def web_elements(refs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return rows
 
 
+def _navigation_in_flight(e: CuaDriverError) -> bool:
+    text = f"{e.code or ''} {e}"
+    return "browser_route_unavailable" in text and ("frameId" in text or "not found" in text) \
+        or "Frame with the given frameId is not found" in text
+
+
 @dataclass
 class BrowserTarget:
     pid: int
@@ -140,6 +146,8 @@ class BrowserDesk:
         self.max_image_dimension = max_image_dimension
         self.target: BrowserTarget | None = None
         self.restored_focus_to: str | None = None
+        #: Waits (s) before re-binding and retrying a snapshot that hit a page mid-navigation.
+        self.retry_delays: tuple[float, ...] = (0.5, 1.0, 2.0)
 
     async def _launch(self) -> int:
         pid = await driver_browser_pid(self.profile_name)
@@ -184,9 +192,7 @@ class BrowserDesk:
 
     async def observe(self, *, include_tree: bool = True, max_elements: int | None = None,
                       max_image_dimension: int | None = None, **_: Any) -> WindowState:
-        t = await self.bind()
-        r = await self.driver.browser_state(target_id=t.target_id, tab_id=t.tab_id,
-                                            semantic=True, include_screenshot=True)
+        t, r = await self._snapshot()
         png = None
         w = h = None
         b64 = r.get("screenshot_png_b64")
@@ -205,6 +211,22 @@ class BrowserDesk:
             degraded_reason=None if elements else "no actionable page elements",
             raw={"url": t.url, "target_id": t.target_id, "tab_id": t.tab_id},
         )
+
+    async def _snapshot(self) -> tuple[BrowserTarget, dict[str, Any]]:
+        """Bind and snapshot the active tab. A click or open_url can leave the page
+        mid-navigation, and then CDP refuses the snapshot because the old frame is
+        gone ("Frame with the given frameId is not found"). That is transient:
+        wait, re-bind (the tab may have new ids), and retry a few times."""
+        for delay in (*self.retry_delays, None):
+            t = await self.bind()
+            try:
+                return t, await self.driver.browser_state(target_id=t.target_id, tab_id=t.tab_id,
+                                                          semantic=True, include_screenshot=True)
+            except CuaDriverError as e:
+                if delay is None or not _navigation_in_flight(e):
+                    raise
+                await asyncio.sleep(delay)
+        raise AssertionError("unreachable")
 
     async def navigate(self, url: str) -> dict[str, Any]:
         t = self.target or await self.bind()
