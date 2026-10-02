@@ -68,6 +68,9 @@ export interface Health {
   exec_mode: "live" | "simulated" | string;
   cost_usd_total: number;
   status_line: string;
+  setup_complete: boolean;
+  plan_only: boolean;
+  cua_driver_detail?: string;
 }
 
 export type Point = [number, number];
@@ -82,6 +85,7 @@ export interface PlanResponse {
   task_id: string;
   steps: Step[];
   scores: Score[];
+  revision?: number;
 }
 
 export type DecisionAction = "remove" | "restore" | "check" | "uncheck";
@@ -89,7 +93,7 @@ export type DecisionAction = "remove" | "restore" | "check" | "uncheck";
 export interface DecisionBody {
   step_id: string;
   action: DecisionAction;
-  source: "plan_panel" | "grid";
+  source: DecisionSource;
 }
 
 export interface RunBody {
@@ -112,7 +116,10 @@ export type EventKind =
   | "action"
   | "step_result"
   | "final_result"
-  | "boundary_candidate";
+  | "boundary_candidate"
+  | "plan_revised"
+  | "frame"
+  | "run_recap";
 
 export const EVENT_KINDS: EventKind[] = [
   "plan_progress",
@@ -124,6 +131,9 @@ export const EVENT_KINDS: EventKind[] = [
   "step_result",
   "final_result",
   "boundary_candidate",
+  "plan_revised",
+  "frame",
+  "run_recap",
 ];
 
 export interface PlanProgressPayload {
@@ -133,7 +143,7 @@ export interface PlanProgressPayload {
   total: number;
 }
 export interface CostPayload {
-  scope: "plan" | "score" | "run";
+  scope: "plan" | "score" | "run" | "recap" | "revise" | "setup";
   model: string;
   usd_delta: number;
   usd_total: number;
@@ -166,6 +176,8 @@ export interface StepResultPayload {
   index: number;
   status: "done" | "failed" | "stopped" | "skipped";
   summary: string;
+  actions?: number;
+  duration_ms?: number;
 }
 export interface FinalResultPayload {
   status: "completed" | "stopped" | "failed" | "capped";
@@ -182,3 +194,88 @@ export interface OversightEvent<P = Record<string, unknown>> {
   ts: string;
   payload: P;
 }
+
+export type Provider = "anthropic" | "openai";
+export type ImageMime = "image/png" | "image/jpeg" | "image/webp";
+
+export interface Attachment {
+  attachment_id: string;
+  mime: ImageMime;
+  bytes: number;
+}
+
+export interface TaskSummary {
+  id: string;
+  prompt: string;
+  created_at: string;
+  step_count: number;
+}
+
+export interface RunRecord {
+  id: string;
+  task_id: string;
+  status: string; // "running" | "completed" | "stopped" | "failed" | "capped"
+  exec_mode: string;
+  approved: string[];
+  removed: string[];
+  started_at: string;
+  finished_at: string | null;
+  final: FinalResultPayload | null;
+}
+
+export interface TaskDetail {
+  task: {
+    id: string;
+    prompt: string;
+    selected_app: string | null;
+    created_at: string;
+    mode: string;
+    attachments: Attachment[];
+  };
+  steps: Step[];
+  scores: Score[];
+  boundaries: { x_dim: string; y_dim: string; polygon: Point[] }[];
+  runs: RunRecord[];
+  cost_usd: number;
+}
+
+export type PermState = "granted" | "denied" | "unknown" | "n/a";
+
+export interface SetupStatus {
+  platform: "macos" | "windows" | "linux";
+  key: { provider: Provider; present: boolean; source: "keychain" | "env" | "none"; tested: boolean; warning: string | null };
+  driver: { installed: boolean; version: string | null; running: boolean };
+  permissions: { accessibility: PermState; screen_recording: PermState };
+  self_test: { passed_at: string | null };
+  plan_only: boolean;
+  complete: boolean;
+}
+
+export interface AppSettings {
+  provider: Provider;
+  model: string;
+  plan_only: boolean;
+  models: Record<Provider, string[]>;
+}
+
+export interface PlanRevisedPayload {
+  revision: number;
+  instruction: string | null;
+  changed_step_ids: string[];
+  added_step_ids: string[];
+  dropped_step_ids: string[];
+}
+
+export interface FramePayload {
+  step_id: string;
+  seq: number; // frame number within the task, 1-based, monotonic
+}
+
+export interface RunRecapPayload {
+  headline: string;
+  done: { step_id: string; text: string }[];
+  skipped: { step_id: string; reason: string }[];
+  source: "llm" | "fallback";
+}
+
+export type DecisionSource = "step_list" | "grid" | "fan_out" | "skip_undecided" | "plan_panel";
