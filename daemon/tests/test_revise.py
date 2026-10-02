@@ -266,3 +266,46 @@ def test_repropose_live_path_uses_replan_with_images(client, monkeypatch):
 def test_revise_routes_registered(client):
     paths = {getattr(r, "path", "") for r in client.app.routes}
     assert {"/task/{task_id}/repropose", "/task/{task_id}/step/{step_id}"} <= paths
+
+
+def test_edit_step_flow(client):
+    tid, steps, _ = _plan(client)
+    sid = steps[4]["id"]
+    client.post(f"/task/{tid}/decision", json={"step_id": sid, "action": "check", "source": "step_list"})
+
+    r = client.patch(f"/task/{tid}/step/{sid}", json={"title": "Draft a short party message"})
+    assert r.status_code == 200, r.text
+    step = r.json()["step"]
+    assert step["title"] == "Draft a short party message"
+    assert step["description"] == steps[4]["description"]
+    assert step["edited_from"] == steps[4]["title"]
+    assert step["status"] == "pending"
+    assert len(r.json()["scores"]) == 10 and {s["step_id"] for s in r.json()["scores"]} == {sid}
+
+    r2 = client.patch(f"/task/{tid}/step/{sid}", json={"description": "Two lines, no names."})
+    assert r2.json()["step"]["edited_from"] == steps[4]["title"]  # first original title kept
+    assert r2.json()["step"]["revision"] == 2
+
+    decs = [d for d in client.get(f"/task/{tid}").json()["decisions"] if d["action"] == "edit"]
+    assert len(decs) == 2 and decs[0]["source"] == "step_list" and decs[0]["step_id"] == sid
+    assert decs[0]["snapshot"]["edited_from"] == steps[4]["title"]
+
+
+def test_edit_step_errors(client):
+    tid, steps, _ = _plan(client)
+    sid = steps[1]["id"]
+    assert client.patch(f"/task/{tid}/step/{sid}", json={"title": "  ", "description": ""}).status_code == 400
+    assert client.patch(f"/task/{tid}/step/stp_nope", json={"title": "x"}).status_code == 404
+    assert client.patch(f"/task/tsk_nope/step/{sid}", json={"title": "x"}).status_code == 404
+    st = client.app.state.oversight
+    st.active_runs[tid] = ActiveRun(run_id="run_x", stop=asyncio.Event())
+    assert client.patch(f"/task/{tid}/step/{sid}", json={"title": "x"}).status_code == 409
+    del st.active_runs[tid]
+
+
+def test_edit_step_noop_returns_current_without_decision(client):
+    tid, steps, _ = _plan(client)
+    sid = steps[2]["id"]
+    r = client.patch(f"/task/{tid}/step/{sid}", json={"title": steps[2]["title"]})
+    assert r.status_code == 200 and r.json()["step"]["revision"] == 0
+    assert not [d for d in client.get(f"/task/{tid}").json()["decisions"] if d["action"] == "edit"]

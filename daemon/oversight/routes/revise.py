@@ -95,3 +95,39 @@ def register(app: FastAPI, ctx: Ctx) -> None:
             await ctx.progress(task_id, "done", f"Plan revised: {n} steps.", n, n)
             return {"task_id": task_id, "steps": store.get_steps(task_id),
                     "scores": store.get_scores(task_id), "revision": revision}
+
+    @app.patch("/task/{task_id}/step/{step_id}")
+    async def edit_step(task_id: str, step_id: str, body: StepPatch):
+        task = store.get_task(task_id)
+        if task is None:
+            return _err(404, "task not found", task_id=task_id)
+        title = (body.title or "").strip()
+        desc = (body.description or "").strip()
+        if not title and not desc:
+            return _err(400, "nothing to change: give a title or a description")
+        steps = store.get_steps(task_id)
+        step = next((s for s in steps if s["id"] == step_id), None)
+        if step is None:
+            return _err(404, "step not found in task", step_id=step_id)
+        if task_id in st.active_runs:
+            return _err(409, "a run is in progress for this task")
+        new_title = title or step["title"]
+        new_desc = desc or step["description"]
+        if new_title == step["title"] and new_desc == step["description"]:
+            return {"step": step, "scores": [s for s in store.get_scores(task_id) if s["step_id"] == step_id]}
+
+        snap = ctx.scores_snapshot(task_id, step_id)  # what the user saw before editing
+        edited = {**step, "title": new_title, "description": new_desc}
+        context = [edited if s["id"] == step_id else s for s in steps]
+        try:
+            scores = await ctx.score_steps(task_id, task["prompt"], [edited], context=context)
+        except LLMError as e:
+            return _err(502, f"rescoring failed: {e}")
+        store.update_step(step_id, new_title, new_desc, step["title"])
+        store.set_step_status(step_id, "pending")  # approval of old text never carries over
+        store.replace_step_scores(step_id, scores)
+        store.add_decision(task_id, step_id, "edit", "step_list", {
+            **snap, "edited_from": step["title"], "new_title": new_title,
+            "new_description": new_desc})
+        fresh = next(s for s in store.get_steps(task_id) if s["id"] == step_id)
+        return {"step": fresh, "scores": [s for s in store.get_scores(task_id) if s["step_id"] == step_id]}
