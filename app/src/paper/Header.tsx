@@ -1,4 +1,4 @@
-import { memo } from "react";
+import { memo, type ReactNode } from "react";
 import type { Health, PlanProgressPayload } from "../api/types";
 import { Icon } from "./Glyph";
 
@@ -7,17 +7,22 @@ export const Header = memo(function Header({
   mode,
   reachable,
   cost,
+  right,
 }: {
   health: Health | null;
   mode: "live" | "mock" | null;
   reachable: boolean;
   cost: number;
+  right?: ReactNode;
 }) {
   const daemonTone = !reachable ? "bad" : mode === "mock" ? "warn" : "ok";
   const keyTone = health?.api_key ? "ok" : "bad";
   return (
     <header className="app-header">
-      <h1>Reflexive Oversight - CUA Agent (cua-driver)</h1>
+      <div className="header-title-row">
+        <h1>Reflexive Oversight - CUA Agent (cua-driver)</h1>
+        {right && <div className="header-right">{right}</div>}
+      </div>
       <div className="status-row" data-testid="status-row">
         <span className={`pill tone-${daemonTone}`} data-testid="pill-daemon" title={mode === "mock" ? "In-browser mock daemon (real daemon unreachable or VITE_MOCK=1)" : "Daemon /health"}>
           <i className="dot" /> Daemon{mode === "mock" ? " (mock)" : ""}

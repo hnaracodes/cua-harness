@@ -10,6 +10,10 @@ import { OversightPanel } from "./OversightPanel";
 import { PlanPanel } from "./PlanPanel";
 import "./paper.css";
 
+// Paper has no instruction box (docs/02). The daemon already sends the planner every
+// approve/remove/edit decision; this sentence only asks it to respect them.
+const PAPER_REPROPOSE = "Re-propose the plan, keeping my approved steps and leaving out the ones I removed.";
+
 export function PaperView({ api, conn, session, setPaperView }: ScreenProps) {
   const { state, cls, counts, idx, canRun, actions } = session;
   const [draft, setDraft] = useState(DEFAULT_TASK);
@@ -33,10 +37,17 @@ export function PaperView({ api, conn, session, setPaperView }: ScreenProps) {
   return (
     <div className="paper-root">
       <div className={`app${api.mode === "mock" ? " is-mock" : ""}`}>
-        <button className="link-btn" data-testid="paper-exit" style={{ position: "absolute", top: 12, right: 16 }} onClick={() => setPaperView(false)}>
-          Exit Paper view
-        </button>
-        <Header health={conn.health} mode={api.mode} reachable={conn.reachable} cost={cost} />
+        <Header
+          health={conn.health}
+          mode={api.mode}
+          reachable={conn.reachable}
+          cost={cost}
+          right={
+            <button className="btn btn-small" data-testid="paper-exit" onClick={() => setPaperView(false)}>
+              Exit Paper view
+            </button>
+          }
+        />
         {state.notice && (
           <div className="notice" role="status">
             {state.notice}
@@ -69,7 +80,8 @@ export function PaperView({ api, conn, session, setPaperView }: ScreenProps) {
                     <PlanPanel steps={state.steps} status={cls.status} checked={state.checked} inside={cls.inside}
                       selectedId={state.selectedId} onSelect={actions.select}
                       onCheck={(id, on) => actions.check(id, on, "plan_panel")} onRemove={(id) => actions.remove(id, "plan_panel")}
-                      onRestore={actions.restore} onSelectAll={actions.approveAll} />
+                      onRestore={actions.restore} onSelectAll={actions.approveAll}
+                      onEdit={(id, patch) => void actions.editStep(id, patch)} />
                   </div>
                 </main>
                 <footer className="footer">
@@ -84,7 +96,14 @@ export function PaperView({ api, conn, session, setPaperView }: ScreenProps) {
                   <div className="footer-row">
                     <button className="btn" data-testid="start-over" onClick={actions.newTask}>Start over</button>
                     <div className="footer-right">
-                      <button className="btn" disabled data-testid="repropose">{Icon.refresh(13)} Re-propose plan</button>
+                      <button
+                        className="btn"
+                        data-testid="repropose"
+                        disabled={state.busy !== null}
+                        onClick={() => void actions.revise(PAPER_REPROPOSE)}
+                      >
+                        {Icon.refresh(13)} {state.busy === "revising" ? "Re-proposing..." : "Re-propose plan"}
+                      </button>
                       <button className="btn btn-primary" data-testid="approve-run" disabled={!canRun} onClick={() => void actions.run()}>
                         {Icon.play(11)} {state.busy === "starting_run" ? "Starting..." : "Approve & Run"}
                       </button>
