@@ -234,3 +234,39 @@ def test_boundary_rejects_non_finite_and_out_of_range(client, bad):
                     headers={"content-type": "application/json"})
     assert r.status_code in (400, 422), r.text
     assert client.get(f"/task/{tid}").status_code == 200
+
+
+def test_interrupted_run_is_closed_with_a_recap_on_restart(tmp_path):
+    """A run row with no finished_at was cut off by a daemon restart. The next start
+    marks it failed and ends its chat with a fallback recap and a final_result."""
+    s = Settings(fixtures=True, exec_mode="simulated", data_dir=tmp_path)
+    with TestClient(create_app(s)) as c:
+        tid, body = _plan(c)
+        ids = [st["id"] for st in body["steps"]]
+        store = c.app.state.oversight.store
+        rid = store.create_run(tid, "simulated", ids[:2], [ids[5]], [])
+        store.append_event(tid, rid, "step_result", {"step_id": ids[0], "index": 1,
+                                                     "status": "done", "summary": "Opened it."})
+        store.db.close()
+
+    s2 = Settings(fixtures=True, exec_mode="simulated", data_dir=tmp_path)
+    with TestClient(create_app(s2)) as c:
+        store = c.app.state.oversight.store
+        run = next(r for r in store.get_runs(tid) if r["id"] == rid)
+        assert run["status"] == "failed" and run["finished_at"]
+        assert run["final"]["message"] == "The daemon restarted during this run."
+        evs = store.get_events(tid)
+        assert [e["kind"] for e in evs[-2:]] == ["run_recap", "final_result"]
+        assert all(e["run_id"] == rid for e in evs[-2:])
+        recap, final = evs[-2]["payload"], evs[-1]["payload"]
+        assert final["status"] == "failed"
+        assert final["message"] == "The daemon restarted during this run."
+        assert [d["step_id"] for d in recap["done"]] == [ids[0]]
+        assert {sk["step_id"] for sk in recap["skipped"]} == set(ids[1:])
+        assert recap["source"] == "fallback"
+        n = len(evs)
+
+    # Idempotent: a second restart finds nothing to sweep.
+    with TestClient(create_app(Settings(fixtures=True, exec_mode="simulated",
+                                        data_dir=tmp_path))) as c:
+        assert len(c.app.state.oversight.store.get_events(tid)) == n

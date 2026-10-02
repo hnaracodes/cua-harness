@@ -107,8 +107,36 @@ def _validate_boundary(b: BoundaryBody) -> str | None:
     return None
 
 
+INTERRUPTED_MESSAGE = "The daemon restarted during this run."
+
+
+def close_interrupted_runs(store: Store) -> None:
+    """At startup, a run row with no finished_at was cut off by a restart (nothing can
+    still be driving it). Mark it failed and end its chat the way every run ends: a
+    run_recap, then a final_result, so the UI never shows a run that is forever running."""
+    from . import recap
+
+    for run in store.unfinished_runs():
+        task_id, run_id = run["task_id"], run["id"]
+        removed = set(run["removed"])
+        recap_steps = [{"id": s["id"], "index": s["index"], "title": s["title"],
+                        "removed": s["id"] in removed} for s in store.get_steps(task_id)]
+        results = {str(e["payload"].get("step_id")): e["payload"]
+                   for e in store.get_events(task_id)
+                   if e["run_id"] == run_id and e["kind"] == "step_result"}
+        final = {"status": "failed", "message": INTERRUPTED_MESSAGE,
+                 "attempted": [sid for sid, r in results.items()
+                               if r.get("status") in ("done", "failed", "stopped")],
+                 "completed": [sid for sid, r in results.items() if r.get("status") == "done"]}
+        store.finish_run(run_id, "failed", final)
+        store.append_event(task_id, run_id, "run_recap",
+                           recap.build_fallback_recap(recap_steps, results, final))
+        store.append_event(task_id, run_id, "final_result", final)
+
+
 def create_app(settings: Settings) -> FastAPI:
     store = Store(settings.db_path)
+    close_interrupted_runs(store)
     bus = EventBus(store)
     llm = None if settings.fixtures else StructuredLLM(settings.provider, settings.model)
     st = State(settings=settings, store=store, bus=bus, llm=llm)
