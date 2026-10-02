@@ -19,3 +19,7 @@ dist/
 app/src-tauri/target/
 app/src-tauri/gen/
 .DS_Store
+
+# design scratch (brainstorm companion, playwright screenshots)
+.superpowers/
+.playwright-mcp/

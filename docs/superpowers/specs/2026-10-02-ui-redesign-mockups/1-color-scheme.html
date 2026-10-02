@@ -1,0 +1,101 @@
+<style>
+  .pal { --r: 12px; font-family: -apple-system, "SF Pro Text", Inter, system-ui, sans-serif; }
+  .pal-a { --bg:#141414; --surf:#1f1f1f; --raised:#2a2a2a; --line:#333; --text:#ececec; --muted:#9b9b9b; --accent:#9d8cff; --accent-ink:#141414; --ok:#5fc48a; --pend:#e8a948; --rm:#e46a5c; --grid:#262626; }
+  .pal-b { --bg:#f5f2ea; --surf:#fffdf8; --raised:#efebe1; --line:#e2dccf; --text:#1f1d1a; --muted:#6f6a61; --accent:#1f1d1a; --accent-ink:#fffdf8; --ok:#2e7d50; --pend:#c47a10; --rm:#b8412f; --grid:#dfe7ef; }
+  .pal-c { --bg:#0b1020; --surf:#121a2f; --raised:#1a2440; --line:#24304f; --text:#e6ecff; --muted:#8e9bba; --accent:#4f8cff; --accent-ink:#fff; --ok:#34d399; --pend:#fbbf24; --rm:#f87171; --grid:#1c2742; }
+  .shot { background:var(--bg); color:var(--text); border-radius:14px; padding:14px; display:flex; flex-direction:column; gap:10px; border:1px solid var(--line); }
+  .shot .top { display:flex; align-items:center; gap:8px; font-size:12px; font-weight:600; }
+  .shot .top .dot { width:8px; height:8px; border-radius:50%; background:var(--ok); }
+  .shot .top .sp { flex:1 }
+  .shot .top .pill { font-weight:500; color:var(--muted); background:var(--raised); padding:2px 8px; border-radius:99px; font-size:11px; }
+  .shot .user { align-self:flex-end; background:var(--raised); padding:8px 11px; border-radius:14px 14px 4px 14px; font-size:12px; max-width:80%; }
+  .shot .ai { font-size:12px; line-height:1.45; }
+  .shot .ai .done { color:var(--ok); font-weight:600; }
+  .shot .ai .muted { color:var(--muted); }
+  .shot .grid { background:var(--surf); border:1px solid var(--line); border-radius:var(--r); }
+  .shot .btns { display:flex; gap:8px; }
+  .shot .b { font-size:12px; padding:7px 12px; border-radius:99px; border:1px solid var(--line); background:var(--surf); color:var(--text); }
+  .shot .b.pri { background:var(--accent); color:var(--accent-ink); border-color:transparent; font-weight:600; }
+  .shot .composer { display:flex; align-items:center; gap:10px; background:var(--surf); border:1px solid var(--line); border-radius:99px; padding:8px 8px 8px 14px; font-size:12px; color:var(--muted); }
+  .shot .composer .plus { font-size:16px; color:var(--text); }
+  .shot .composer .sp { flex:1 }
+  .shot .composer .send { width:26px; height:26px; border-radius:50%; background:var(--accent); color:var(--accent-ink); display:grid; place-items:center; font-weight:700; }
+  .legend { display:flex; gap:10px; font-size:11px; color:var(--muted); }
+  .legend i { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:4px; vertical-align:middle; }
+</style>
+
+<h2>Which color direction feels right?</h2>
+<p class="subtitle">Same mini-screen in three palettes: a chat turn, the boundary grid, the action buttons, and the composer. Status colors (approved / pending / removed) are tuned per palette so they stay distinguishable. Ignore layout for now; this is only about color and mood.</p>
+
+<div class="cards">
+  <!-- A -->
+  <div class="card" data-choice="graphite" onclick="toggleSelect(this)">
+    <div class="card-image pal pal-a" style="padding:12px;background:#0d0d0d">
+      <div class="shot">
+        <div class="top"><span class="dot"></span>Sketch Oversight<span class="sp"></span><span class="pill">claude-sonnet-5-5 · $0.11</span></div>
+        <div class="user">Find a tennis racket under $100 and tell my friends about the party on WhatsApp</div>
+        <div class="ai">I've planned 6 steps and placed them on the grid. Circle the ones you're comfortable with.</div>
+        <svg class="grid" viewBox="0 0 280 120" width="100%">
+          <g style="stroke:var(--grid)"><line x1="70" y1="0" x2="70" y2="120"/><line x1="140" y1="0" x2="140" y2="120"/><line x1="210" y1="0" x2="210" y2="120"/><line x1="0" y1="40" x2="280" y2="40"/><line x1="0" y1="80" x2="280" y2="80"/></g>
+          <path d="M18,62 L96,54 L118,92 L70,112 L22,104 Z" style="fill:var(--ok);fill-opacity:.14;stroke:var(--ok);stroke-width:2"/>
+          <g style="fill:var(--ok)"><circle cx="48" cy="88" r="9"/><circle cx="82" cy="80" r="9"/><circle cx="62" cy="100" r="9"/></g>
+          <g style="fill:var(--pend)"><circle cx="160" cy="30" r="9"/><circle cx="196" cy="74" r="9"/></g>
+          <g style="fill:var(--rm)"><circle cx="246" cy="98" r="9"/></g>
+          <g style="fill:var(--surf);stroke:var(--text)"><circle cx="18" cy="62" r="3.5"/><circle cx="96" cy="54" r="3.5"/><circle cx="118" cy="92" r="3.5"/><circle cx="70" cy="112" r="3.5"/><circle cx="22" cy="104" r="3.5"/></g>
+        </svg>
+        <div class="legend"><span><i style="background:var(--ok)"></i>Approved</span><span><i style="background:var(--pend)"></i>Needs a decision</span><span><i style="background:var(--rm)"></i>Removed</span></div>
+        <div class="btns"><span class="b pri">Approve 3 &amp; run</span><span class="b">Revise plan</span></div>
+        <div class="composer"><span class="plus">+</span>Ask the agent to do something…<span class="sp"></span><span class="send">↑</span></div>
+      </div>
+    </div>
+    <div class="card-body"><h3>A. Graphite</h3><p>Neutral near-black like ChatGPT/Claude dark. One violet accent for "do this" buttons, so status colors own green/amber/red. Calm, familiar, recedes behind the grid.</p></div>
+  </div>
+
+  <!-- B -->
+  <div class="card" data-choice="paper" onclick="toggleSelect(this)">
+    <div class="card-image pal pal-b" style="padding:12px;background:#e9e4d8">
+      <div class="shot">
+        <div class="top"><span class="dot"></span>Sketch Oversight<span class="sp"></span><span class="pill">claude-sonnet-5-5 · $0.11</span></div>
+        <div class="user">Find a tennis racket under $100 and tell my friends about the party on WhatsApp</div>
+        <div class="ai">I've planned 6 steps and placed them on the grid. Circle the ones you're comfortable with.</div>
+        <svg class="grid" viewBox="0 0 280 120" width="100%">
+          <g style="stroke:var(--grid)"><line x1="35" y1="0" x2="35" y2="120"/><line x1="70" y1="0" x2="70" y2="120"/><line x1="105" y1="0" x2="105" y2="120"/><line x1="140" y1="0" x2="140" y2="120"/><line x1="175" y1="0" x2="175" y2="120"/><line x1="210" y1="0" x2="210" y2="120"/><line x1="245" y1="0" x2="245" y2="120"/><line x1="0" y1="30" x2="280" y2="30"/><line x1="0" y1="60" x2="280" y2="60"/><line x1="0" y1="90" x2="280" y2="90"/></g>
+          <path d="M18,62 L96,54 L118,92 L70,112 L22,104 Z" style="fill:var(--ok);fill-opacity:.12;stroke:var(--ok);stroke-width:2.2;stroke-linejoin:round"/>
+          <g style="fill:var(--ok)"><circle cx="48" cy="88" r="9"/><circle cx="82" cy="80" r="9"/><circle cx="62" cy="100" r="9"/></g>
+          <g style="fill:var(--pend)"><circle cx="160" cy="30" r="9"/><circle cx="196" cy="74" r="9"/></g>
+          <g style="fill:var(--rm)"><circle cx="246" cy="98" r="9"/></g>
+          <g style="fill:var(--surf);stroke:var(--text)"><circle cx="18" cy="62" r="3.5"/><circle cx="96" cy="54" r="3.5"/><circle cx="118" cy="92" r="3.5"/><circle cx="70" cy="112" r="3.5"/><circle cx="22" cy="104" r="3.5"/></g>
+        </svg>
+        <div class="legend"><span><i style="background:var(--ok)"></i>Approved</span><span><i style="background:var(--pend)"></i>Needs a decision</span><span><i style="background:var(--rm)"></i>Removed</span></div>
+        <div class="btns"><span class="b pri">Approve 3 &amp; run</span><span class="b">Revise plan</span></div>
+        <div class="composer"><span class="plus">+</span>Ask the agent to do something…<span class="sp"></span><span class="send">↑</span></div>
+      </div>
+    </div>
+    <div class="card-body"><h3>B. Paper</h3><p>Warm ivory with ink-black buttons and graph-paper grid lines. Leans into the "sketch" idea: drawing a boundary feels like marking up a page. Light mode first.</p></div>
+  </div>
+
+  <!-- C -->
+  <div class="card" data-choice="midnight" onclick="toggleSelect(this)">
+    <div class="card-image pal pal-c" style="padding:12px;background:#060a16">
+      <div class="shot">
+        <div class="top"><span class="dot"></span>Sketch Oversight<span class="sp"></span><span class="pill">claude-sonnet-5-5 · $0.11</span></div>
+        <div class="user">Find a tennis racket under $100 and tell my friends about the party on WhatsApp</div>
+        <div class="ai">I've planned 6 steps and placed them on the grid. Circle the ones you're comfortable with.</div>
+        <svg class="grid" viewBox="0 0 280 120" width="100%">
+          <g style="stroke:var(--grid)"><line x1="70" y1="0" x2="70" y2="120"/><line x1="140" y1="0" x2="140" y2="120"/><line x1="210" y1="0" x2="210" y2="120"/><line x1="0" y1="40" x2="280" y2="40"/><line x1="0" y1="80" x2="280" y2="80"/></g>
+          <path d="M18,62 L96,54 L118,92 L70,112 L22,104 Z" style="fill:var(--ok);fill-opacity:.14;stroke:var(--ok);stroke-width:2"/>
+          <g style="fill:var(--ok)"><circle cx="48" cy="88" r="9"/><circle cx="82" cy="80" r="9"/><circle cx="62" cy="100" r="9"/></g>
+          <g style="fill:var(--pend)"><circle cx="160" cy="30" r="9"/><circle cx="196" cy="74" r="9"/></g>
+          <g style="fill:var(--rm)"><circle cx="246" cy="98" r="9"/></g>
+          <g style="fill:var(--surf);stroke:var(--text)"><circle cx="18" cy="62" r="3.5"/><circle cx="96" cy="54" r="3.5"/><circle cx="118" cy="92" r="3.5"/><circle cx="70" cy="112" r="3.5"/><circle cx="22" cy="104" r="3.5"/></g>
+        </svg>
+        <div class="legend"><span><i style="background:var(--ok)"></i>Approved</span><span><i style="background:var(--pend)"></i>Needs a decision</span><span><i style="background:var(--rm)"></i>Removed</span></div>
+        <div class="btns"><span class="b pri">Approve 3 &amp; run</span><span class="b">Revise plan</span></div>
+        <div class="composer"><span class="plus">+</span>Ask the agent to do something…<span class="sp"></span><span class="send">↑</span></div>
+      </div>
+    </div>
+    <div class="card-body"><h3>C. Midnight</h3><p>Deep navy with a bright blue accent. More "control room" than chat app; status colors pop hardest against it, at the cost of feeling busier.</p></div>
+  </div>
+</div>
+
+<p class="subtitle" style="margin-top:18px">Whichever you pick, I'd ship a matching light/dark pair and follow the OS setting. The pick sets the primary mood.</p>

@@ -1,0 +1,172 @@
+<style>
+  .g { --bg:#141414; --surf:#1c1c1c; --raised:#262626; --line:#303030; --text:#ececec; --muted:#8f8f8f; --accent:#9d8cff; --ok:#5fc48a; --pend:#e8a948; --rm:#e46a5c; --grid:#242424;
+       font-family:-apple-system,"SF Pro Text",Inter,system-ui,sans-serif; color:var(--text); font-size:12px; }
+  .win { background:var(--bg); border:1px solid var(--line); border-radius:12px; display:flex; height:640px; overflow:hidden; }
+  .rail { width:48px; border-right:1px solid var(--line); display:flex; flex-direction:column; align-items:center; gap:12px; padding:14px 0; color:var(--muted); }
+  .rail .ic { width:28px; height:28px; border-radius:8px; display:grid; place-items:center; background:var(--raised); color:var(--text); font-size:15px; }
+  .rail .h { width:22px; height:4px; border-radius:2px; background:var(--raised); }
+  .chat { width:300px; border-right:1px solid var(--line); display:flex; flex-direction:column; padding:16px; gap:12px; }
+  .u { align-self:flex-end; background:var(--raised); border-radius:14px 14px 4px 14px; padding:9px 12px; max-width:88%; line-height:1.4; }
+  .u .att { display:flex; gap:6px; margin-bottom:6px; }
+  .u .att span { width:44px; height:32px; border-radius:6px; background:linear-gradient(135deg,#3a3a3a,#2a2a2a); border:1px solid #444; }
+  .a { line-height:1.5; color:#dcdcdc; }
+  .chips { display:flex; gap:6px; flex-wrap:wrap; }
+  .chip { border:1px solid var(--line); border-radius:99px; padding:3px 9px; font-size:11px; display:flex; align-items:center; gap:5px; }
+  .chip i { width:7px; height:7px; border-radius:50%; }
+  .sp { flex:1; }
+  .comp { border:1px solid var(--line); background:var(--surf); border-radius:22px; padding:8px 8px 8px 12px; display:flex; align-items:center; gap:10px; color:var(--muted); }
+  .comp .plus { color:var(--text); font-size:17px; }
+  .comp .send { margin-left:auto; width:28px; height:28px; border-radius:50%; background:var(--accent); color:#141414; display:grid; place-items:center; font-weight:700; }
+  .ws { flex:1; display:flex; flex-direction:column; min-width:0; }
+  .wsh { display:flex; align-items:center; gap:10px; padding:12px 16px; border-bottom:1px solid var(--line); }
+  .wsh .t { font-weight:600; font-size:13px; }
+  .sel { border:1px solid var(--line); background:var(--surf); border-radius:8px; padding:4px 9px; display:flex; gap:6px; align-items:center; }
+  .sel .k { color:var(--muted); font-size:11px; }
+  .sel .info { color:var(--muted); border:1px solid #444; border-radius:50%; width:14px; height:14px; display:grid; place-items:center; font-size:9px; }
+  .seg { margin-left:auto; display:flex; background:var(--surf); border:1px solid var(--line); border-radius:8px; padding:2px; font-size:11px; }
+  .seg span { padding:3px 8px; border-radius:6px; color:var(--muted); }
+  .seg span.on { background:var(--raised); color:var(--text); }
+  .canvas { position:relative; margin:12px 16px 0; flex:1; min-height:0; background:var(--surf); border:1px solid var(--line); border-radius:12px; overflow:hidden; }
+  .canvas svg.plot { position:absolute; inset:0; width:100%; height:100%; }
+  .tools { position:absolute; left:12px; bottom:12px; display:flex; gap:2px; background:#232323ee; border:1px solid var(--line); border-radius:10px; padding:3px; align-items:center; }
+  .tools span { padding:5px 8px; border-radius:7px; color:#cfcfcf; font-size:12px; }
+  .tools span.on { background:var(--accent); color:#141414; font-weight:600; }
+  .tools .div { width:1px; height:18px; background:var(--line); padding:0; margin:0 3px; }
+  .mini { position:absolute; right:12px; bottom:12px; width:110px; height:66px; background:#181818; border:1px solid var(--line); border-radius:8px; }
+  .coach { position:absolute; top:12px; left:50%; transform:translateX(-50%); background:#232323ee; border:1px solid var(--line); border-radius:99px; padding:6px 14px; color:#cfcfcf; font-size:11.5px; white-space:nowrap; }
+  .coach b { color:var(--text); }
+  .steps { margin:10px 16px 0; display:flex; flex-direction:column; gap:4px; max-height:150px; overflow:hidden; }
+  .row { display:flex; align-items:center; gap:9px; padding:6px 10px; border-radius:8px; background:var(--surf); border:1px solid var(--line); }
+  .row .n { width:20px; height:20px; border-radius:50%; display:grid; place-items:center; font-size:10.5px; font-weight:700; color:#141414; flex:none; }
+  .row .ti { flex:1; }
+  .row .acts { color:var(--muted); display:flex; gap:10px; font-size:12px; }
+  .row.rm .ti { text-decoration:line-through; color:var(--muted); }
+  .bar { display:flex; align-items:center; gap:8px; padding:12px 16px; }
+  .bar .hint { color:var(--muted); font-size:11.5px; }
+  .btn { border:1px solid var(--line); background:var(--surf); border-radius:99px; padding:7px 13px; font-size:12px; }
+  .btn.pri { background:var(--accent); color:#141414; border-color:transparent; font-weight:600; }
+  .note { font-size:12px; color:#555; line-height:1.5; }
+  .ann { display:grid; grid-template-columns:repeat(3,1fr); gap:10px 18px; margin:14px 0 6px; }
+  .ann div { font-size:13px; line-height:1.45; }
+  .ann b { display:block; }
+  .two { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  .mini-canvas { background:#1c1c1c; border-radius:10px; border:1px solid #303030; }
+</style>
+
+<h2>The review workspace: does this canvas feel right?</h2>
+<p class="subtitle">Layout A, Graphite. Read the numbered callouts below the mockup, then the crowding question at the bottom.</p>
+
+<div class="g"><div class="win">
+  <div class="rail"><div class="ic">◎</div><div class="ic" style="background:transparent;border:1px solid var(--line)">+</div><div class="h"></div><div class="h"></div><div class="h"></div><div class="sp"></div><div class="ic" style="background:transparent;font-size:13px">⚙</div></div>
+
+  <div class="chat">
+    <div class="u"><div class="att"><span></span></div>Find me a tennis racket under $100 for my friend's birthday, and draft a WhatsApp message telling my other friends about the party.</div>
+    <div class="a">I'd do this in <b>6 steps</b>. I've placed them on the grid by how uncertain and how reversible each one is. <b>Drag a loop around the ones you're OK with</b>; anything outside the loop still needs your call.</div>
+    <div class="chips"><span class="chip"><i style="background:var(--ok)"></i>3 approved</span><span class="chip"><i style="background:var(--pend)"></i>2 need a decision</span><span class="chip"><i style="background:var(--rm)"></i>1 removed</span></div>
+    <div class="a" style="color:var(--muted);font-size:11px">claude-sonnet-5-5 · planned + scored in 9.4s · $0.11</div>
+    <div class="sp"></div>
+    <div class="comp"><span class="plus">+</span>Reply, or ask me to change a step…<span class="send">↑</span></div>
+  </div>
+
+  <div class="ws">
+    <div class="wsh">
+      <span class="t">Plan review</span>
+      <span class="sel"><span class="k">X</span>Action uncertainty ▾<span class="info">i</span></span>
+      <span class="sel"><span class="k">Y</span>Reversibility ▾<span class="info">i</span></span>
+      <span class="seg"><span class="on">Grid</span><span>Paper view</span></span>
+    </div>
+
+    <div class="canvas">
+      <svg class="plot" viewBox="0 0 760 330" preserveAspectRatio="none">
+        <g stroke="#242424">
+          <line x1="190" y1="0" x2="190" y2="330"/><line x1="380" y1="0" x2="380" y2="330"/><line x1="570" y1="0" x2="570" y2="330"/>
+          <line x1="0" y1="82" x2="760" y2="82"/><line x1="0" y1="165" x2="760" y2="165"/><line x1="0" y1="247" x2="760" y2="247"/>
+        </g>
+        <text x="10" y="320" fill="#6f6f6f" font-size="10">Low uncertainty →</text>
+        <text x="10" y="16" fill="#6f6f6f" font-size="10">↑ Easy to undo</text>
+        <path d="M44,170 L250,150 L300,262 L178,306 L56,292 Z" fill="#5fc48a" fill-opacity=".12" stroke="#5fc48a" stroke-width="2" stroke-linejoin="round"/>
+        <!-- stack fanned out: true point + leader lines -->
+        <circle cx="120" cy="250" r="3" fill="#ececec"/>
+        <line x1="120" y1="250" x2="96" y2="226" stroke="#777" stroke-width="1"/>
+        <line x1="120" y1="250" x2="146" y2="228" stroke="#777" stroke-width="1"/>
+        <circle cx="120" cy="250" r="36" fill="none" stroke="#5fc48a" stroke-opacity=".35" stroke-dasharray="3 3"/>
+        <g font-size="11" font-weight="700" text-anchor="middle" fill="#141414">
+          <circle cx="96" cy="226" r="13" fill="#5fc48a"/><text x="96" y="230">1</text>
+          <circle cx="146" cy="228" r="13" fill="#5fc48a"/><text x="146" y="232">4</text>
+          <circle cx="222" cy="214" r="13" fill="#5fc48a"/><text x="222" y="218">2</text>
+          <circle cx="430" cy="96" r="13" fill="#e8a948"/><text x="430" y="100">6</text>
+          <circle cx="470" cy="236" r="13" fill="#e8a948"/><text x="470" y="240">5</text>
+          <circle cx="610" cy="276" r="13" fill="none" stroke="#e46a5c" stroke-dasharray="3 2.5"/><text x="610" y="280" fill="#e46a5c">3</text>
+        </g>
+        <g fill="#141414" stroke="#ececec" stroke-width="1.4"><circle cx="44" cy="170" r="4.5"/><circle cx="250" cy="150" r="4.5"/><circle cx="300" cy="262" r="4.5"/><circle cx="178" cy="306" r="4.5"/><circle cx="56" cy="292" r="4.5"/></g>
+        <!-- hover card -->
+        <g transform="translate(486,206)">
+          <rect width="200" height="58" rx="8" fill="#262626" stroke="#3a3a3a"/>
+          <text x="10" y="18" fill="#ececec" font-size="11" font-weight="600">5 · Choose WhatsApp recipients</text>
+          <text x="10" y="34" fill="#9b9b9b" font-size="10">Uncertainty: medium. Who counts as</text>
+          <text x="10" y="47" fill="#9b9b9b" font-size="10">"other friends" is unspecified.</text>
+        </g>
+      </svg>
+      <div class="coach">Drag a loop to approve · <b>pinch or ⌘-scroll</b> to zoom · <b>two-finger drag</b> or <b>space-drag</b> to pan</div>
+      <div class="tools"><span class="on">✎ Draw</span><span>✋ Pan</span><span class="div"></span><span>−</span><span>140%</span><span>+</span><span>⤢ Fit</span><span class="div"></span><span>↺ Undo</span><span>Clear</span></div>
+      <svg class="mini" viewBox="0 0 110 66"><rect x="2" y="2" width="106" height="62" rx="5" fill="none" stroke="#2a2a2a"/><g fill="#5fc48a"><circle cx="18" cy="48" r="2.5"/><circle cx="24" cy="46" r="2.5"/><circle cx="34" cy="42" r="2.5"/></g><g fill="#e8a948"><circle cx="62" cy="18" r="2.5"/><circle cx="68" cy="44" r="2.5"/></g><circle cx="88" cy="52" r="2.5" fill="#e46a5c"/><rect x="6" y="20" width="70" height="42" rx="3" fill="#9d8cff" fill-opacity=".08" stroke="#9d8cff"/></svg>
+    </div>
+
+    <div class="steps">
+      <div class="row"><span class="n" style="background:var(--ok)">1</span><span class="ti">Search for tennis rackets under $100</span><span class="acts">✎ ⊘</span></div>
+      <div class="row"><span class="n" style="background:var(--pend)">5</span><span class="ti">Choose WhatsApp recipients</span><span class="acts"><span style="color:var(--ok)">✓ Approve</span> ✎ ⊘</span></div>
+      <div class="row rm"><span class="n" style="background:transparent;border:1px dashed var(--rm);color:var(--rm)">3</span><span class="ti">Add selected racket to cart</span><span class="acts">Undo</span></div>
+    </div>
+
+    <div class="bar">
+      <span class="hint">2 steps still need a decision</span><span class="sp" style="flex:1"></span>
+      <span class="btn">Approve all 5</span>
+      <span class="btn pri">Run 3 approved, skip 2 ▸</span>
+    </div>
+  </div>
+</div></div>
+
+<div class="ann">
+  <div><b>① Numbers, not glyphs, in badges</b>Badge "5" is row "5" in the list. Hovering either highlights both. Hover card gives the reason in one line.</div>
+  <div><b>② Pan &amp; zoom like Figma/Maps</b>Drag = draw (default). Pinch / ⌘-scroll = zoom at cursor. Two-finger or space-drag = pan. Toolbar has the same for mouse users, plus Fit and Undo. Minimap shows where you are.</div>
+  <div><b>③ Coach line, first time only</b>Teaches the gesture in place; disappears after your first loop. No reading a legend to figure it out.</div>
+  <div><b>④ Buttons that do something</b>Instead of a greyed-out "Approve &amp; Run" + hint text: <i>Run 3 approved, skip 2</i> (records the 2 as removed, a training signal) or <i>Approve all 5</i>. The label always says exactly what will run.</div>
+  <div><b>⑤ Chat stays live</b>"Change step 5 to only message the party group" in the composer re-plans that step; the grid updates in place.</div>
+  <div><b>⑥ Paper view</b>Toggle reproduces the video's layout for demos and the parity checklist.</div>
+</div>
+
+<h3 style="margin-top:22px">Crowding: two steps on the same spot</h3>
+<p class="subtitle">Scores are label bands plus an offset, so two steps can sit at <i>exactly</i> the same point, where no amount of zoom pulls them apart. Pick how ties behave (zoom/pan exists in both).</p>
+
+<div class="cards">
+  <div class="card" data-choice="fan" onclick="toggleSelect(this)">
+    <div class="card-image" style="background:#141414;padding:14px">
+      <svg class="mini-canvas" viewBox="0 0 300 150" width="100%">
+        <text x="12" y="20" fill="#8f8f8f" font-size="10">Collapsed</text>
+        <circle cx="70" cy="85" r="15" fill="#e8a948"/><text x="70" y="89" text-anchor="middle" font-size="11" font-weight="700" fill="#141414">×2</text>
+        <text x="40" y="128" fill="#8f8f8f" font-size="9.5">click / hover</text>
+        <text x="172" y="20" fill="#8f8f8f" font-size="10">Fanned out</text>
+        <circle cx="220" cy="85" r="3" fill="#ececec"/>
+        <line x1="220" y1="85" x2="196" y2="62" stroke="#777"/><line x1="220" y1="85" x2="246" y2="64" stroke="#777"/>
+        <circle cx="196" cy="62" r="13" fill="#e8a948"/><text x="196" y="66" text-anchor="middle" font-size="11" font-weight="700" fill="#141414">1</text>
+        <circle cx="246" cy="64" r="13" fill="#e8a948"/><text x="246" y="68" text-anchor="middle" font-size="11" font-weight="700" fill="#141414">4</text>
+        <text x="176" y="128" fill="#8f8f8f" font-size="9.5">leader lines → true point</text>
+      </svg>
+    </div>
+    <div class="card-body"><h3>A. Stack &amp; fan out <span style="font-weight:400;color:#888">(recommended)</span></h3><p>Overlapping badges merge into one "×2" badge; click fans them out with leader lines to the real point. A loop includes or excludes the stack together (they really are at one spot); to split them, approve/remove one from the fan or the list.</p></div>
+  </div>
+  <div class="card" data-choice="dots" onclick="toggleSelect(this)">
+    <div class="card-image" style="background:#141414;padding:14px">
+      <svg class="mini-canvas" viewBox="0 0 300 150" width="100%">
+        <text x="12" y="20" fill="#8f8f8f" font-size="10">Shrink when crowded</text>
+        <circle cx="66" cy="84" r="5" fill="#e8a948"/><circle cx="74" cy="86" r="5" fill="#e8a948" stroke="#141414"/>
+        <text x="58" y="70" font-size="9" fill="#cfcfcf">1</text><text x="80" y="74" font-size="9" fill="#cfcfcf">4</text>
+        <text x="172" y="20" fill="#8f8f8f" font-size="10">Hover cluster → list</text>
+        <rect x="176" y="50" width="104" height="54" rx="7" fill="#262626" stroke="#3a3a3a"/>
+        <text x="186" y="70" font-size="10" fill="#ececec">1 · Search rackets</text>
+        <text x="186" y="90" font-size="10" fill="#ececec">4 · Draft message</text>
+      </svg>
+    </div>
+    <div class="card-body"><h3>B. Shrink to dots + popover list</h3><p>Crowded badges shrink to small numbered dots and never move; hovering a cluster lists what's in it. Positions stay perfectly literal, but small dots are harder to read and to click.</p></div>
+  </div>
+</div>
