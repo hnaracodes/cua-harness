@@ -208,3 +208,28 @@ test("an error while revising an existing plan is a revise error, not a plan err
   assert.deepEqual(kinds(m), ["user", "plan_ready", "revise_error"]);
   assert.deepEqual(m[2], { kind: "revise_error", id: "revise-error-7", seq: 7, error: "model refused", instruction: null });
 });
+
+test("step_started with an app gives a step_running message in that app, and step_done keeps it", () => {
+  const ev = stream();
+  const pre = [
+    ...planEvents(ev),
+    ev("consideration_scored", { step_count: 3, dimension_count: 10, approved_count: 2 }, "r1"),
+    ev("step_started", { step_id: "s1", index: 1, title: "Step 1", app: null }, "r1"),
+    ev("step_result", { step_id: "s1", index: 1, status: "done", summary: "Searched." }, "r1"),
+    ev("step_started", { step_id: "s2", index: 2, title: "Step 2", app: "Messages" }, "r1"),
+  ];
+  const running = eventsToMessages(input(pre)).filter((x) => x.kind === "step_running") as Extract<ChatMessage, { kind: "step_running" }>[];
+  assert.equal(running.length, 1);
+  assert.equal(running[0].app, "Messages");
+  const done = eventsToMessages(input([...pre, ev("step_result", { step_id: "s2", index: 2, status: "done", summary: "Sent." }, "r1")]))
+    .filter((x) => x.kind === "step_done") as Extract<ChatMessage, { kind: "step_done" }>[];
+  assert.deepEqual(done.map((d) => d.app), [null, "Messages"]);
+});
+
+test("a step's own app fills in when step_started has none (older daemon)", () => {
+  const ev = stream();
+  const withApp = steps.map((s) => (s.id === "s1" ? { ...s, app: { name: "Messages", bundle_id: "com.apple.MobileSMS" } } : s));
+  const all = [...planEvents(ev), ev("step_started", { step_id: "s1", index: 1, title: "Step 1" }, "r1")];
+  const m = eventsToMessages({ prompt: "p", attachments: [], steps: withApp, events: all, planError: null });
+  assert.equal((m.find((x) => x.kind === "step_running") as Extract<ChatMessage, { kind: "step_running" }>).app, "Messages");
+});

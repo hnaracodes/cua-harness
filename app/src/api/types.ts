@@ -39,6 +39,13 @@ export interface Step {
   status: StepStatus;
   edited_from: string | null;
   revision: number;
+  /** The native app this step runs in; null (or absent, on old data) = the agent's own browser. */
+  app?: StepApp | null;
+}
+
+export interface StepApp {
+  name: string;
+  bundle_id: string;
 }
 
 export interface Score {
@@ -160,6 +167,8 @@ export interface StepRefPayload {
   step_id: string;
   index: number;
   title: string;
+  /** step_started only: the native app's name, null/absent for the agent's browser. */
+  app?: string | null;
 }
 export interface ActionPayload {
   step_id: string;

@@ -11,8 +11,8 @@ export type ChatMessage =
   | { kind: "revise_error"; id: string; seq: number | null; error: string; instruction: string | null }
   | { kind: "revised"; id: string; instruction: string | null; changed: number[]; added: number[]; dropped: number }
   | { kind: "run_started"; id: string; approvedIndexes: number[]; skippedIndexes: number[] }
-  | { kind: "step_running"; id: string; stepId: string; index: number; title: string }
-  | { kind: "step_done"; id: string; stepId: string; index: number; status: "done" | "failed" | "stopped" | "skipped"; summary: string; actions: number | null; durationMs: number | null }
+  | { kind: "step_running"; id: string; stepId: string; index: number; title: string; app?: string | null }
+  | { kind: "step_done"; id: string; stepId: string; index: number; status: "done" | "failed" | "stopped" | "skipped"; summary: string; actions: number | null; durationMs: number | null; app?: string | null }
   | { kind: "recap"; id: string; recap: RunRecapPayload; final: FinalResultPayload | null; costUsd: number; actions: number; durationMs: number | null }
   | { kind: "notice"; id: string; tone: "info" | "warn" | "error"; text: string };
 export interface ChatInput {
