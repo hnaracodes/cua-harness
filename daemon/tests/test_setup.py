@@ -520,3 +520,21 @@ def test_startup_keychain_warning_reaches_setup_status(tmp_path):
                                         data_dir=tmp_path))) as c:
         _use(c, make_env()[0])
         assert c.get("/setup/status").json()["key"]["warning"] is None
+
+
+def test_self_test_page_is_http_and_served_by_the_daemon(client):
+    """cua-driver's browser_navigate accepts only http/https/about URLs, so the
+    scratch page can't be a data: URL. The daemon serves it on 127.0.0.1."""
+    assert setup.SELF_TEST_URL.startswith("http://127.0.0.1:")
+    r = client.get(setup.SELF_TEST_PATH)
+    assert r.status_code == 200 and r.headers["content-type"].startswith("text/html")
+    assert 'aria-label="scratch"' in r.text and "Oversight self-test" in r.text
+
+
+def test_self_test_endpoint_opens_the_daemons_own_scratch_page(client):
+    desk = FakeDesk()
+    env, _ = make_env(outputs=DRIVER_OK, desk=desk)
+    _use(client, env)
+    assert client.post("/setup/self-test", json={}).json()["ok"] is True
+    assert desk.urls and desk.urls[0].startswith("http://127.0.0.1:")
+    assert desk.urls[0].endswith(setup.SELF_TEST_PATH)

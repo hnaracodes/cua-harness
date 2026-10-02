@@ -12,7 +12,6 @@ import json
 import re
 import sys
 import time
-import urllib.parse
 from collections.abc import Awaitable, Callable, MutableMapping
 from dataclasses import dataclass
 from typing import Any
@@ -32,8 +31,18 @@ PANES: dict[str, str] = {
 }
 INSTALL_CMD = "curl -fsSL https://cua.ai/driver/install.sh | bash"
 SELF_TEST_TEXT = "hello"
-SELF_TEST_URL = "data:text/html," + urllib.parse.quote(
-    '<title>Oversight self-test</title><textarea aria-label="scratch" autofocus></textarea>')
+#: The self-test's scratch page. The daemon serves it at SELF_TEST_PATH because
+#: cua-driver's browser_navigate accepts only http/https/about URLs (no data:).
+SELF_TEST_HTML = ('<!doctype html><title>Oversight self-test</title>'
+                  '<textarea aria-label="scratch" autofocus></textarea>')
+SELF_TEST_PATH = "/setup/scratch"
+
+
+def self_test_url(port: int = 8765) -> str:
+    return f"http://127.0.0.1:{port}{SELF_TEST_PATH}"
+
+
+SELF_TEST_URL = self_test_url()
 LOG_TAIL_LINES = 40
 
 Runner = Callable[[list[str], float], Awaitable[tuple[int, str, str]]]
@@ -291,7 +300,7 @@ async def status(env: SetupEnv, store: Any, settings: Any) -> dict:
 
 # ------------------------------------------------------------------ self-test
 
-async def self_test(env: SetupEnv) -> tuple[bool, str]:
+async def self_test(env: SetupEnv, url: str = SELF_TEST_URL) -> tuple[bool, str]:
     """Open a scratch page on the AGENT'S OWN browser desk (never the user's apps),
     type "hello", capture that window, read the value back. Each failure names the
     permission that most likely caused it, so the wizard can point at the fix."""
@@ -304,7 +313,7 @@ async def self_test(env: SetupEnv) -> tuple[bool, str]:
         return False, detail
     desk = env.make_desk(drv)
     try:
-        await desk.ensure(SELF_TEST_URL)
+        await desk.ensure(url)
         state = await desk.observe()
         box = next((e for e in state.elements
                     if e.get("role") in ("textbox", "textarea") and e.get("element_token")), None)

@@ -5,7 +5,7 @@ request, so tests swap it for fakes after create_app."""
 from __future__ import annotations
 
 from fastapi import FastAPI
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 from .. import setup
@@ -130,9 +130,13 @@ def register(app: FastAPI, ctx: Ctx) -> None:
             return _err(400, f"which must be one of {sorted(setup.PANES)}")
         return {"ok": await setup.open_permission(env(), body.which)}
 
+    @app.get(setup.SELF_TEST_PATH)
+    async def self_test_page():
+        return HTMLResponse(setup.SELF_TEST_HTML)
+
     @app.post("/setup/self-test")
     async def self_test():
-        ok, detail = await setup.self_test(env())
+        ok, detail = await setup.self_test(env(), setup.self_test_url(st.settings.port))
         if ok:
             st.store.set_setting("self_test_passed_at", now_iso())
         reset_cua_cache()
