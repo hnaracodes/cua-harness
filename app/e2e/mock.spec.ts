@@ -72,3 +72,55 @@ test("a run narrates: actions/duration on step_result, frames, recap before fina
   expect(r.frameUrl.startsWith("data:image/svg+xml")).toBe(true);
   expect(decodeURIComponent(r.frameUrl)).toContain("Search for tennis rackets under $100");
 });
+
+test("repropose edits the last non-removed step, or adds one on 'add'", async ({ page }) => {
+  await mock(page, "fast");
+  const r = await page.evaluate(async () => {
+    const api = (window as any).__oversightMock.api;
+    const { task_id } = await api.createTask("revise me");
+    const plan = await api.plan(task_id);
+    const last = plan.steps[plan.steps.length - 1];
+    const prev = plan.steps[plan.steps.length - 2];
+    await api.decision(task_id, { step_id: last.id, action: "remove", source: "step_list" });
+    const events: any[] = [];
+    api.subscribe(task_id, 0, (e: any) => events.push(e));
+    const a = await api.repropose(task_id, "only message the party group");
+    const b = await api.repropose(task_id, "add a step to compare reviews");
+    const revised = events.filter((e) => e.kind === "plan_revised").map((e) => e.payload);
+    let conflict = 0;
+    try {
+      const { task_id: t2 } = await api.createTask("no plan");
+      await api.repropose(t2, "x");
+    } catch (e: any) {
+      conflict = e.status;
+    }
+    return {
+      prevId: prev.id, prevTitle: prev.title,
+      aStep: a.steps.find((s: any) => s.id === prev.id),
+      aRev: a.revision, bLen: b.steps.length, bLast: b.steps[b.steps.length - 1],
+      revised, before: plan.steps.length, conflict,
+      scoresForNew: b.scores.filter((s: any) => s.step_id === b.steps[b.steps.length - 1].id).length,
+    };
+  });
+  expect(r.aStep.title).toContain("only message the party group");
+  expect(r.aStep.edited_from).toBe(r.prevTitle);
+  expect(r.aRev).toBe(1);
+  expect(r.revised[0]).toMatchObject({ revision: 1, instruction: "only message the party group", changed_step_ids: [r.prevId], added_step_ids: [], dropped_step_ids: [] });
+  expect(r.bLen).toBe(r.before + 1);
+  expect(r.bLast.status).toBe("pending");
+  expect(r.revised[1].added_step_ids).toEqual([r.bLast.id]);
+  expect(r.scoresForNew).toBe(10);
+  expect(r.conflict).toBe(409);
+});
+
+test("listTasks is newest first", async ({ page }) => {
+  await mock(page, "fast");
+  const ids = await page.evaluate(async () => {
+    const api = (window as any).__oversightMock.api;
+    const a = (await api.createTask("first")).task_id;
+    await new Promise((r) => setTimeout(r, 5));
+    const b = (await api.createTask("second")).task_id;
+    return { a, b, list: (await api.listTasks()).map((t: any) => t.id) };
+  });
+  expect(ids.list.slice(0, 2)).toEqual([ids.b, ids.a]);
+});

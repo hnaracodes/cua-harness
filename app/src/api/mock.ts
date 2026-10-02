@@ -101,6 +101,24 @@ export function createMockDaemon(): DaemonApi {
     return t;
   };
 
+  /** Latest remove/restore decision per step, as the daemon's stored status would be. */
+  const removedSet = (t: MockTask) => {
+    const out = new Set<string>();
+    for (const d of t.decisions) {
+      if (d.action === "remove") out.add(d.step_id);
+      else if (d.action === "restore") out.delete(d.step_id);
+    }
+    return out;
+  };
+
+  const scoresFor = (s: Step): Score[] =>
+    syntheticCells(s.title).map(([li, off, rationale], d) => {
+      const dim = FIXTURE_DIMENSIONS[d];
+      return { step_id: s.id, dimension: dim.key, label: dim.labels[li], position: (li + off) / dim.labels.length, confidence: 0.5, rationale };
+    });
+
+  const clip = (s: string, n = 60) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+
   const api: DaemonApi = {
     mode: "mock",
     baseUrl: "mock://in-browser",
@@ -232,7 +250,10 @@ export function createMockDaemon(): DaemonApi {
     },
 
     async listTasks() {
-      return [...tasks.values()].reverse().map((t) => ({ id: t.id, prompt: t.prompt, created_at: t.createdAt, step_count: t.steps.length }));
+      return [...tasks.values()]
+        .map((t, i) => ({ t, i }))
+        .sort((a, b) => b.t.createdAt.localeCompare(a.t.createdAt) || b.i - a.i)
+        .map(({ t }) => ({ id: t.id, prompt: t.prompt, created_at: t.createdAt, step_count: t.steps.length }));
     },
     async getTask(taskId: string) {
       const t = getTask(taskId);
@@ -261,10 +282,35 @@ export function createMockDaemon(): DaemonApi {
     attachmentUrl: (id: string) => blobs.get(id)?.url ?? "",
     async repropose(taskId: string, instruction: string | null) {
       const t = getTask(taskId);
-      t.revision += 1;
+      if (t.running) throw new HttpError(409, { error: "a run is in progress for this task" });
+      if (!t.steps.length) throw new HttpError(409, { error: "task has no plan yet" });
       emit(t, "plan_progress", { stage: "planning", message: "Revising the plan.", done: 0, total: t.steps.length });
-      await sleep(400);
-      emit(t, "plan_revised", { revision: t.revision, instruction, changed_step_ids: [], added_step_ids: [], dropped_step_ids: [] });
+      await sleep(ms(600));
+      t.revision += 1;
+      const text = (instruction ?? "").trim();
+      const changed: string[] = [];
+      const added: string[] = [];
+      if (text && /\badd\b/i.test(text)) {
+        const idx = t.steps.length + 1;
+        const s: Step = {
+          id: `stp_${taskId.slice(4)}_r${t.revision}_${idx}`, task_id: taskId, index: idx, title: clip(text),
+          description: `Added on request: ${text}`, glyph: "generic", status: "pending", edited_from: null, revision: t.revision,
+        };
+        t.steps.push(s);
+        t.scores.push(...scoresFor(s));
+        added.push(s.id);
+      } else if (text) {
+        const removed = removedSet(t);
+        const target = [...t.steps].reverse().find((s) => !removed.has(s.id));
+        if (target) {
+          target.edited_from = target.edited_from ?? target.title;
+          target.title = clip(`${target.title} (${text})`);
+          target.revision = t.revision;
+          t.scores = t.scores.filter((x) => x.step_id !== target.id).concat(scoresFor(target));
+          changed.push(target.id);
+        }
+      }
+      emit(t, "plan_revised", { revision: t.revision, instruction: text || null, changed_step_ids: changed, added_step_ids: added, dropped_step_ids: [] });
       emit(t, "plan_progress", { stage: "done", message: "Plan revised.", done: t.steps.length, total: t.steps.length });
       return { task_id: taskId, steps: t.steps.map((s) => ({ ...s })), scores: t.scores.map((s) => ({ ...s })), revision: t.revision };
     },
