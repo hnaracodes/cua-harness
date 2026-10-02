@@ -1,8 +1,7 @@
 # Sketch Oversight replica
 
 Rebuild of the system in **Sketch Oversight: Drawing Decision Boundaries for
-Delegated AI Agent Actions** (UIST 2026), Kyzyl Monterio*, Takeshi Koey*,
-Sauvik Das, Carnegie Mellon University.
+Delegated AI Agent Actions** (UIST 2026)
 
 Target: 1-to-1 behavioral parity within a week, then a small number of
 deliberate improvements where the original leaves an obvious gap.
