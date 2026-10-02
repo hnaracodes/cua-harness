@@ -1,0 +1,62 @@
+/* Graphite (spec: Decisions). Dark first, light follows the OS. Only global tokens live here. */
+:root {
+  color-scheme: dark;
+  --bg: #141414;
+  --surface: #1c1c1c;
+  --raised: #262626;
+  --line: #303030;
+  --text: #ececec;
+  --text-2: #a3a3a3;
+  --text-3: #8f8f8f;
+  --accent: #9d8cff;
+  --accent-ink: #141414;
+  --accent-soft: rgba(157, 140, 255, 0.16);
+  --ok: #5fc48a;
+  --ok-soft: rgba(95, 196, 138, 0.14);
+  --pend: #e8a948;
+  --pend-soft: rgba(232, 169, 72, 0.14);
+  --rm: #e46a5c;
+  --rm-soft: rgba(228, 106, 92, 0.14);
+  --grid: #242424;
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 16px;
+  --r-xl: 26px;
+  --r-pill: 999px;
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, "Segoe UI", system-ui, sans-serif;
+  --mono: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-md: 13px;
+  --fs-lg: 15px;
+  --fs-xl: 26px;
+  --rail-w: 52px;
+  --chat-w: 340px;
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --dur: 140ms;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    color-scheme: light;
+    --bg: #fafafa;
+    --surface: #ffffff;
+    --raised: #f0f0f0;
+    --line: #e3e3e3;
+    --text: #1a1a1a;
+    --text-2: #5c5c5c;
+    --text-3: #7a7a7a;
+    --accent: #6e5bf0;
+    --accent-ink: #ffffff;
+    --accent-soft: rgba(110, 91, 240, 0.12);
+    --ok: #23874e;
+    --ok-soft: rgba(35, 135, 78, 0.12);
+    --pend: #b8740c;
+    --pend-soft: rgba(184, 116, 12, 0.12);
+    --rm: #c2412f;
+    --rm-soft: rgba(194, 65, 47, 0.12);
+    --grid: #ececec;
+    --shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+  }
+}
