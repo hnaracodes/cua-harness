@@ -167,3 +167,32 @@ test("planError from the session shows once, and not on top of a streamed error"
   assert.deepEqual(kinds(m), ["user", "plan_error"]);
   assert.equal((m[1] as Extract<ChatMessage, { kind: "plan_error" }>).error, "model refused");
 });
+
+test("a finished run's approved line comes from its own events, so revising afterwards never rewrites it", () => {
+  const ev = stream();
+  const all = [
+    ...planEvents(ev),
+    ...runEvents(ev, true),
+    ev("plan_progress", { stage: "planning", message: "Revising the plan.", done: 0, total: 4 }),
+    ev("plan_revised", { revision: 1, instruction: "Check the reviews first", changed_step_ids: [], added_step_ids: ["s0"], dropped_step_ids: [] }),
+    ev("plan_progress", { stage: "done", message: "Plan revised.", done: 4, total: 4 }),
+  ];
+  const before = eventsToMessages(input(all.slice(0, planEvents(stream()).length + runEvents(stream(), true).length)));
+  const line = (m: ChatMessage[]) => m.find((x) => x.kind === "run_started") as Extract<ChatMessage, { kind: "run_started" }>;
+  assert.deepEqual([line(before).approvedIndexes, line(before).skippedIndexes], [[1, 2], [3]]);
+  // The revise put a new step first, so every old step moved down one index.
+  const revised: Step[] = [
+    { ...steps[0], id: "s0", index: 1, title: "Check reviews" },
+    ...steps.map((x) => ({ ...x, index: x.index + 1 })),
+  ];
+  const after = eventsToMessages({ prompt: "Find a racket", attachments: [], steps: revised, events: all, planError: null });
+  assert.deepEqual(line(after), line(before));
+});
+
+test("a run still in progress lists approved steps that have not started yet", () => {
+  const ev = stream();
+  const all = [...planEvents(ev), ...runEvents(ev, true)];
+  const upToS1Action = all.slice(0, all.findIndex((e) => e.kind === "action") + 1);
+  const started = eventsToMessages(input(upToS1Action)).find((x) => x.kind === "run_started") as Extract<ChatMessage, { kind: "run_started" }>;
+  assert.deepEqual([started.approvedIndexes, started.skippedIndexes], [[1, 2], [3]]);
+});
