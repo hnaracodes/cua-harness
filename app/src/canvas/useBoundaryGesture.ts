@@ -3,7 +3,7 @@ import { useMemo, useRef, useState, type RefObject } from "react";
 import { flushSync } from "react-dom";
 import type { Point } from "../api/types";
 import { clampPoint, pointInPolygon, projectOnSegment, simplifyStrokePreserving } from "../lib/geometry";
-import { dataToScreen, screenToData, type Camera, type Rect } from "../lib/viewport";
+import { dataToScreen, panStep, screenToData, type Camera, type Rect } from "../lib/viewport";
 import { BADGE_HIT, DRAG_THRESHOLD, EDGE_HIT, HANDLE_HIT, MIN_AREA_PX, type Tool } from "./constants";
 
 export type HitTarget = { kind: "badge"; id: string; at: Point } | { kind: "stack"; key: string; at: Point };
@@ -15,7 +15,7 @@ type Mode =
   | { kind: "draw"; stroke: Point[]; prev: Point[] | null }
   | { kind: "handle"; idx: number; grab: Point; poly: Point[]; prev: Point[] }
   | { kind: "move"; start: Point; poly: Point[]; prev: Point[]; moved: boolean }
-  | { kind: "pan"; start: Point; cam: Camera };
+  | { kind: "pan"; last: Point; cam: Camera }; // cam: the pointerdown camera, restored on cancel
 
 export interface GestureDeps {
   svgRef: RefObject<SVGSVGElement | null>;
@@ -172,7 +172,7 @@ export function useBoundaryGesture(deps: GestureDeps): GestureApi {
           try { svg.setPointerCapture(e.pointerId); } catch { /* synthetic pointers */ }
           e.preventDefault();
           const prev = copy(d.current.polygon);
-          if (e.button === 1 || d.current.tool === "pan" || d.current.spaceHeld) return setMode({ kind: "pan", start: p, cam: cam() });
+          if (e.button === 1 || d.current.tool === "pan" || d.current.spaceHeld) return setMode({ kind: "pan", last: p, cam: cam() });
           const hit = hitTest(p);
           if (hit.kind === "handle" && prev) {
             const n = toData(p), h = prev[hit.idx];
@@ -193,7 +193,11 @@ export function useBoundaryGesture(deps: GestureDeps): GestureApi {
             setHov(hit.kind === "target" ? (hit.t.kind === "badge" ? { kind: "badge", id: hit.t.id } : { kind: "stack", key: hit.t.key }) : hit.kind === "empty" ? null : { kind: hit.kind });
             return;
           }
-          if (m.kind === "pan") return d.current.setCamera({ ...m.cam, tx: m.cam.tx + p[0] - m.start[0], ty: m.cam.ty + p[1] - m.start[1] });
+          if (m.kind === "pan") {
+            const from = m.last;
+            m.last = p;
+            return d.current.setCamera(panStep(cam(), from, p));
+          }
           if (m.kind === "maybe") {
             if (Math.hypot(p[0] - m.start[0], p[1] - m.start[1]) < DRAG_THRESHOLD) return;
             const s: Point[] = [clampPoint(toData(m.start)), clampPoint(toData(p))];

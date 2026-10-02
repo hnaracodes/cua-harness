@@ -28,7 +28,7 @@ export function primaryAction(
 
 export function decisionHint(counts: Counts): string | null {
   if (counts.pending === 0) return null;
-  return `${counts.pending} ${counts.pending === 1 ? "step still needs" : "steps still need"} a decision`;
+  return counts.pending === 1 ? "1 step still needs a decision" : `${counts.pending} steps still need a decision`;
 }
 
 export const showSecondaryApproveAll = (counts: Counts): boolean => counts.approved > 0 && counts.pending > 0;

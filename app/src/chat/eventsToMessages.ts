@@ -21,6 +21,9 @@ interface RunAcc {
   started: Msg<"run_started">;
   skipped: Set<string>;
   removed: StepRefPayload[];
+  /** step_id → index as this run saw it (step_started / step_result payloads). */
+  ran: Map<string, number>;
+  finished: boolean;
   results: StepResultPayload[];
   running: Map<string, Msg<"step_running">>;
   costUsd: number;
@@ -70,7 +73,7 @@ export function eventsToMessages(input: ChatInput): ChatMessage[] {
     if (!r) {
       const started: Msg<"run_started"> = { kind: "run_started", id: `run-${ev.seq}`, approvedIndexes: [], skippedIndexes: [] };
       out.push(started);
-      r = { startTs: ev.ts, started, skipped: new Set(), removed: [], results: [], running: new Map(), costUsd: 0, actions: 0, recap: null };
+      r = { startTs: ev.ts, started, skipped: new Set(), removed: [], ran: new Map(), finished: false, results: [], running: new Map(), costUsd: 0, actions: 0, recap: null };
       runs.set(id, r);
     }
     return r;
@@ -96,7 +99,12 @@ export function eventsToMessages(input: ChatInput): ChatMessage[] {
             planned = true;
             out.push({ kind: "plan_ready", id: `plan-${ev.seq}`, stepCount: pp.total, revision: 0 });
           }
-          if (pp.stage === "error") out.push({ kind: "plan_error", id: `plan-error-${ev.seq}`, error: pp.message });
+          // After the first plan, planning only runs again for a revise: its Try again must
+          // re-send the instruction, not re-plan (which would just reload the saved plan).
+          if (pp.stage === "error")
+            out.push(planned
+              ? { kind: "revise_error", id: `revise-error-${ev.seq}`, seq: ev.seq, error: pp.message, instruction: null }
+              : { kind: "plan_error", id: `plan-error-${ev.seq}`, error: pp.message });
         }
       } else if (ev.kind === "plan_revised") {
         const rv = p as PlanRevisedPayload;
@@ -124,6 +132,7 @@ export function eventsToMessages(input: ChatInput): ChatMessage[] {
       case "step_started": {
         const sr = p as StepRefPayload;
         const m: Msg<"step_running"> = { kind: "step_running", id: `running-${ev.seq}`, stepId: sr.step_id, index: sr.index, title: sr.title };
+        r.ran.set(sr.step_id, sr.index);
         r.running.set(sr.step_id, m);
         out.push(m);
         break;
@@ -139,6 +148,7 @@ export function eventsToMessages(input: ChatInput): ChatMessage[] {
         const running = r.running.get(res.step_id);
         if (running) drop(running);
         r.running.delete(res.step_id);
+        r.ran.set(res.step_id, res.index);
         r.results.push(res);
         out.push({
           kind: "step_done",
@@ -159,6 +169,7 @@ export function eventsToMessages(input: ChatInput): ChatMessage[] {
         break;
       case "final_result": {
         const f = p as FinalResultPayload;
+        r.finished = true;
         r.running.forEach(drop);
         r.running.clear();
         const ms = Date.parse(ev.ts) - Date.parse(r.startTs);
@@ -178,9 +189,16 @@ export function eventsToMessages(input: ChatInput): ChatMessage[] {
     }
   }
 
+  // Indexes come from the run's own events, as the run saw them: a later revise re-indexes
+  // the current steps and must not rewrite history. The executor reports every approved
+  // step (a step_result "skipped" for ones it never reached), so a finished run is complete.
+  // A run still in progress also lists approved steps not reached yet; the plan cannot
+  // change while it runs, so the current steps are the run's steps.
   for (const r of runs.values()) {
     r.started.skippedIndexes = r.removed.map((x) => x.index).sort((a, b) => a - b);
-    r.started.approvedIndexes = input.steps.filter((s) => !r.skipped.has(s.id)).map((s) => s.index).sort((a, b) => a - b);
+    const approved = new Set(r.ran.values());
+    if (!r.finished) for (const s of input.steps) if (!r.skipped.has(s.id) && !r.ran.has(s.id)) approved.add(s.index);
+    r.started.approvedIndexes = [...approved].sort((a, b) => a - b);
   }
 
   if (input.planError && lastStage !== "error") out.push({ kind: "plan_error", id: "plan-error", error: input.planError });

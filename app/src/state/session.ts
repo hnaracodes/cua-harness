@@ -1,5 +1,6 @@
 // The one source of truth for a task in the UI. Pure: no fetches, no value imports
 // from relative modules (node --test runs this file directly).
+import type { DaemonApi } from "../api/client";
 import type { Attachment, OversightEvent, Point, Score, Step, TaskDetail } from "../api/types";
 
 export type Phase = "home" | "planning" | "review" | "running" | "done";
@@ -106,6 +107,9 @@ export function sessionReducer(s: SessionState, a: SessionAction): SessionState 
         ...initialSession,
         axes: s.axes,
         phase,
+        // Reloading the open task keeps its SSE subscription (and its seq cursor), so the
+        // events already received will not be replayed: keep them.
+        events: d.task.id === s.taskId ? s.events : [],
         taskId: d.task.id,
         prompt: d.task.prompt,
         attachments: d.task.attachments ?? [],
@@ -178,4 +182,34 @@ export function sessionReducer(s: SessionState, a: SessionAction): SessionState 
     case "notice":
       return { ...s, notice: a.text };
   }
+}
+
+// Daemon flows that need more than the reducer. Pure apart from the api they are handed,
+// so tests drive them with a fake api and the reducer.
+type Dispatch = (a: SessionAction) => void;
+const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+export async function openTaskInto(api: Pick<DaemonApi, "getTask">, taskId: string, dispatch: Dispatch): Promise<void> {
+  try {
+    dispatch({ type: "load_task", detail: await api.getTask(taskId) });
+  } catch (e) {
+    dispatch({ type: "notice", text: `Couldn't open that task: ${errText(e)}` });
+  }
+}
+
+/** Ask the daemon to stop. `{stopped:false}` while the UI still shows a run means the run
+ *  is gone (cut off by a daemon restart; the daemon finishes such runs at startup), so
+ *  reload the task rather than spin on "running" forever. */
+export async function stopRun(api: Pick<DaemonApi, "stop" | "getTask">, getState: () => SessionState, dispatch: Dispatch): Promise<void> {
+  const taskId = getState().taskId;
+  if (!taskId) return;
+  let stopped: boolean;
+  try {
+    stopped = (await api.stop(taskId)).stopped;
+  } catch (e) {
+    dispatch({ type: "notice", text: `Stopping failed: ${errText(e)}` });
+    return;
+  }
+  const now = getState();
+  if (!stopped && now.taskId === taskId && now.phase === "running") await openTaskInto(api, taskId, dispatch);
 }

@@ -61,6 +61,47 @@ test("revise from chat", async ({ page }) => {
   await expect(page.getByTestId("composer-input")).toHaveValue("");
 });
 
+test("a failed revise keeps the draft and offers Try again in the chat", async ({ page }) => {
+  await toReview(page);
+  await page.evaluate(() => {
+    const w = window as unknown as { __oversightMock: { api: { repropose: (t: string, i: string | null) => Promise<unknown> } }; __revises: number };
+    const api = w.__oversightMock.api;
+    const orig = api.repropose.bind(api);
+    w.__revises = 0;
+    api.repropose = (t, i) => { w.__revises += 1; return orig(t, i); };
+  });
+  const text = "Please FAIL this revise";
+  await page.getByTestId("composer-input").fill(text);
+  await page.getByTestId("composer-send").click();
+  const err = page.getByTestId("chat-revise-error");
+  await expect(err).toHaveCount(1, { timeout: 20_000 });
+  await expect(err).toContainText("mock: the planner refused");
+  await expect(page.getByTestId("composer-input")).toHaveValue(text);
+  // Not a plan error: its Try again would re-plan instead of re-sending the instruction.
+  await expect(page.getByTestId("chat-plan-error")).toHaveCount(0);
+  await expect(page.getByTestId("notice")).toHaveCount(0);
+  await expect(page.getByTestId("chat-msg-user")).toHaveCount(1);
+
+  await page.getByTestId("chat-revise-retry").click();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __revises: number }).__revises)).toBe(2);
+  await expect(page.getByTestId("chat-revise-error")).toHaveCount(1, { timeout: 20_000 });
+  await expect(page.getByTestId("chat-revise-retry")).toBeVisible();
+  await expect(page.getByTestId("composer-input")).toHaveValue(text);
+});
+
+test("a revise that fails before the daemon streams anything still shows in the chat", async ({ page }) => {
+  await toReview(page);
+  await page.evaluate(() => {
+    const api = (window as unknown as { __oversightMock: { api: { repropose: () => Promise<unknown> } } }).__oversightMock.api;
+    api.repropose = () => Promise.reject(new Error("Failed to fetch"));
+  });
+  await page.getByTestId("composer-input").fill("Only message the party group");
+  await page.getByTestId("composer-send").click();
+  await expect(page.getByTestId("chat-revise-error")).toContainText("Failed to fetch");
+  await expect(page.getByTestId("chat-revise-retry")).toBeVisible();
+  await expect(page.getByTestId("composer-input")).toHaveValue("Only message the party group");
+});
+
 test("paper toggle switches to the source layout", async ({ page }) => {
   await toReview(page);
   await page.getByTestId("paper-toggle").click();

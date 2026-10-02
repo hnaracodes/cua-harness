@@ -130,6 +130,56 @@ test("pan never re-renders badges; Fit returns to a framing camera", async ({ pa
   for (const i of [1, 2, 3, 4, 5, 6]) await expect(page.getByTestId(`badge-${i}`)).toBeInViewport();
 });
 
+test("space released while the window was blurred does not leave space-drag stuck on", async ({ page }) => {
+  await openReview(page);
+  const svg = page.getByTestId("boundary-canvas");
+  await svg.focus();
+  await page.keyboard.down("Space");
+  await expect(svg).toHaveCSS("cursor", "grab");
+  // The keyup lands in another window, so the page only ever sees a blur.
+  await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+  await expect(svg).not.toHaveCSS("cursor", "grab");
+  const tx0 = await svg.getAttribute("data-tx");
+  const pl = await plotBox(page);
+  await loop(page, at(pl, 0.13, 0.1), 0.09 * pl.w, 0.12 * pl.h);
+  await expect(page.getByTestId("boundary-polygon")).toBeVisible();
+  await expect(svg).toHaveAttribute("data-tx", tx0!);
+});
+
+test("space-drag state also clears when the page is hidden", async ({ page }) => {
+  await openReview(page);
+  const svg = page.getByTestId("boundary-canvas");
+  await svg.focus();
+  await page.keyboard.down("Space");
+  await expect(svg).toHaveCSS("cursor", "grab");
+  await page.evaluate(() => {
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => true });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await expect(svg).not.toHaveCSS("cursor", "grab");
+});
+
+test("a keyboard zoom made mid-pan is kept by the rest of the pan", async ({ page }) => {
+  await openReview(page);
+  const svg = page.getByTestId("boundary-canvas");
+  await svg.focus();
+  await page.keyboard.press("h"); // pan tool
+  const box = (await svg.boundingBox())!;
+  const x = box.x + box.width / 2, y = box.y + box.height / 2;
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x + 20, y + 10, { steps: 4 });
+  await page.keyboard.press("+");
+  await expect(svg).toHaveAttribute("data-scale", "1.4142");
+  const tx = Number(await svg.getAttribute("data-tx"));
+  await page.mouse.move(x + 30, y + 10, { steps: 2 });
+  await expect(svg).toHaveAttribute("data-scale", "1.4142");
+  expect(Number(await svg.getAttribute("data-tx"))).toBeCloseTo(tx + 10, 0);
+  await page.mouse.up();
+  await expect(svg).toHaveAttribute("data-scale", "1.4142");
+});
+
 test("feel: pointermove → next frame under 16 ms (median) during a handle drag", async ({ page }) => {
   await openReview(page);
   const pl = await plotBox(page);

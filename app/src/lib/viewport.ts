@@ -29,6 +29,10 @@ export function zoomAt(c: Camera, factor: number, anchor: Pt): Camera {
 
 export const panBy = (c: Camera, dx: number, dy: number): Camera => ({ ...c, tx: c.tx + dx, ty: c.ty + dy });
 
+/** One pointer-drag pan step: move the *current* camera by the pointer's delta since the
+ *  last move, so a zoom made mid-pan (keyboard, toolbar) is never undone by the drag. */
+export const panStep = (current: Camera, from: Pt, to: Pt): Camera => panBy(current, to[0] - from[0], to[1] - from[1]);
+
 /** Clamp scale and keep at least `minVisible` px of the plot on screen on each axis. */
 export function clampCamera(c: Camera, plot: Rect, view: Size, minVisible = MIN_VISIBLE_PX): Camera {
   const scale = clampScale(c.scale);

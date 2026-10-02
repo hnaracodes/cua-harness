@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { clampPoint } from "../src/lib/geometry.ts";
 import {
-  IDENTITY, MAX_SCALE, MIN_SCALE, centerOn, clampCamera, dataToScreen, fit, panBy, screenToData, visibleData, zoomAt,
+  IDENTITY, MAX_SCALE, MIN_SCALE, centerOn, clampCamera, dataToScreen, fit, panBy, panStep, screenToData, visibleData, zoomAt,
   type Camera, type Pt,
 } from "../src/lib/viewport.ts";
 
@@ -75,4 +75,15 @@ test("centerOn and visibleData", () => {
   close(m[0], plot.x + plot.w / 2);
   const v = visibleData(plot, IDENTITY);
   close(v.x0, 0); close(v.y0, 0); close(v.x1, 1); close(v.y1, 1);
+});
+
+test("panStep moves the current camera by the pointer delta, so a zoom made mid-pan survives", () => {
+  let c: Camera = IDENTITY;
+  c = panStep(c, [100, 100], [130, 90]);
+  assert.deepEqual(c, { scale: 1, tx: 30, ty: -10 });
+  c = zoomAt(c, 2, [200, 200]); // keyboard or toolbar zoom while the pointer is still down
+  const next = panStep(c, [130, 90], [135, 95]);
+  assert.equal(next.scale, 2);
+  assert.equal(next.tx, c.tx + 5);
+  assert.equal(next.ty, c.ty + 5);
 });

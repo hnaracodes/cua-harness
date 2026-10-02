@@ -310,6 +310,11 @@ export function createMockDaemon(): DaemonApi {
       if (!t.steps.length) throw new HttpError(409, { error: "task has no plan yet" });
       emit(t, "plan_progress", { stage: "planning", message: "Revising the plan.", done: 0, total: t.steps.length });
       await sleep(ms(600));
+      if (/FAIL/.test(instruction ?? "")) {
+        // Same shape as the daemon's LLMError path: an error progress event, then a 502.
+        emit(t, "plan_progress", { stage: "error", message: "mock: the planner refused", done: 0, total: 0 });
+        throw new HttpError(502, { error: "revising failed: mock: the planner refused" });
+      }
       t.revision += 1;
       const text = (instruction ?? "").trim();
       const changed: string[] = [];

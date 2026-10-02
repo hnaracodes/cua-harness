@@ -6,6 +6,9 @@ export type ChatMessage =
   | { kind: "planning"; id: string; stage: "planning" | "scoring"; message: string; done: number; total: number }
   | { kind: "plan_ready"; id: string; stepCount: number; revision: number }
   | { kind: "plan_error"; id: string; error: string }
+  /** A revise of an existing plan failed. `seq` is the streamed error event (null when the
+   *  request failed without one); `instruction` is set by the screen that can re-send it. */
+  | { kind: "revise_error"; id: string; seq: number | null; error: string; instruction: string | null }
   | { kind: "revised"; id: string; instruction: string | null; changed: number[]; added: number[]; dropped: number }
   | { kind: "run_started"; id: string; approvedIndexes: number[]; skippedIndexes: number[] }
   | { kind: "step_running"; id: string; stepId: string; index: number; title: string }

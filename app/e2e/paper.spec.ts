@@ -147,6 +147,21 @@ test.describe("paper flow", () => {
     await expect(card).toHaveAttribute("data-status", "pending");
   });
 
+  test("Undo in the plan panel records its decision with source plan_panel", async ({ page }) => {
+    await page.evaluate(() => {
+      const w = window as unknown as { __oversightMock: { api: { decision: (t: string, d: unknown) => Promise<unknown> } }; __decisions: unknown[] };
+      const api = w.__oversightMock.api;
+      const orig = api.decision.bind(api);
+      w.__decisions = [];
+      api.decision = (t, d) => { w.__decisions.push(d); return orig(t, d); };
+    });
+    await page.getByTestId("remove-3").click();
+    await page.getByTestId("undo-3").click();
+    await expect(page.getByTestId("step-card-3")).toHaveAttribute("data-status", "pending");
+    const sent = await page.evaluate(() => (window as unknown as { __decisions: { action: string; source: string }[] }).__decisions);
+    expect(sent.map((d) => `${d.action}:${d.source}`)).toEqual(["remove:plan_panel", "restore:plan_panel"]);
+  });
+
   test("run view keeps original indices 1, 2, 4 and lists removed actions", async ({ page }) => {
     const pts = [await center(page, "badge-1"), await center(page, "badge-2"), await center(page, "badge-4")];
     await loopAround(page, pts);
