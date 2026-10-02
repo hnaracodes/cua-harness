@@ -1,0 +1,93 @@
+[
+ {
+  "prompt": "Help me find a tennis racket less than $100 for my friends birthday present, and prepare a short message to amogh to let them know I am planning a party via iMessages",
+  "steps": [
+   [
+    "Search for tennis rackets under $100",
+    "Open a web browser and search major retailers for tennis rackets priced below $100, using a price filter where available."
+   ],
+   [
+    "Compare top racket options",
+    "Review several results by price, brand, weight, reviews and shipping time, then summarize the best two or three candidates for you to choose from."
+   ],
+   [
+    "Present recommended racket for your approval",
+    "Show you the shortlist with links and prices so you can pick the gift. Nothing is added to a cart or purchased at this stage."
+   ],
+   [
+    "Open Messages and find Amogh's contact",
+    "Open the iMessage app and locate the conversation with Amogh without typing or sending anything yet."
+   ],
+   [
+    "Draft a short party message to Amogh",
+    "Write a brief, friendly message in the iMessage compose box saying you are planning a party for your friend's birthday. Leave it as an unsent draft for your review and edits."
+   ],
+   [
+    "Send message only after your approval",
+    "After you have reviewed and approved the draft wording, send the message to Amogh via iMessage. This step is skipped if you want changes or decline."
+   ]
+  ]
+ },
+ {
+  "prompt": "Help me find a tennis racket less than $100 for my friends birthday present, and send Amogh an iMessage that says exactly \"test\".",
+  "steps": [
+   [
+    "Search for tennis rackets under $100",
+    "Open a web browser and search retailers for tennis rackets priced below $100, applying a price filter where available."
+   ],
+   [
+    "Browse top-rated racket listings",
+    "Look through the results and note several well-reviewed options, including price, brand, size and customer ratings."
+   ],
+   [
+    "Compare options and shortlist rackets",
+    "Compare the shortlisted rackets on price, reviews and suitability as a gift, then present the findings for your review without buying anything."
+   ],
+   [
+    "Find Amogh in Contacts",
+    "Look up Amogh in Contacts or Messages and confirm the correct contact and iMessage number or address before writing anything."
+   ],
+   [
+    "Draft iMessage reading exactly \"test\"",
+    "Open Messages, start a new conversation with Amogh and type exactly \"test\" in the compose field without sending it."
+   ],
+   [
+    "Send the \"test\" iMessage to Amogh",
+    "Only after you approve the recipient and text, press send to deliver the message \"test\" to Amogh via iMessage."
+   ]
+  ]
+ },
+ {
+  "prompt": "Find me some updates on the recent news about Jev, and how it works, and compile a pdf document explaining it in my downloads folder. Then find a new owala water bottle for me to buy and compare the 32oz and 40oz for use in college , which color to buy for someone who likes darker schemes",
+  "steps": [
+   [
+    "Search for recent news about Jev",
+    "Open a browser and search news sources for the latest updates on Jev. Since the name is ambiguous, note which Jev topic the results point to and flag any uncertainty."
+   ],
+   [
+    "Research how Jev works",
+    "Open reliable explainer pages or official sources and gather key details on how Jev works. Take notes to use in the document."
+   ],
+   [
+    "Compile findings into a PDF",
+    "Draft a document that summarizes the recent news and explains how Jev works, then save it as a PDF in the Downloads folder. Open it for you to review."
+   ],
+   [
+    "Search for current Owala water bottles",
+    "Browse Owala's official site and major retailers to see current and new bottle models, including the FreeSip lineup in 32oz and 40oz."
+   ],
+   [
+    "Compare Owala 32oz and 40oz for college",
+    "Compare size, weight, portability, cup holder fit, backpack fit, price, and how long each lasts between refills. Summarize which suits college use."
+   ],
+   [
+    "Shortlist dark Owala colors",
+    "Identify dark color options in your preferred size, such as black, navy, or deep-toned designs, and check which are in stock. Recommend one or two with prices and links."
+   ],
+   [
+    "Present bottle recommendation for your approval",
+    "Show you the recommended size, color, price, and seller. No item will be added to a cart or purchased unless you approve in a separate later step."
+   ]
+  ]
+ }
+]

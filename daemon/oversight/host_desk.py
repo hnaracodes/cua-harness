@@ -263,26 +263,31 @@ class AgentDesk:
 MESSAGES_APP = ("com.apple.MobileSMS", "Messages")
 NOTES_APP = ("com.apple.Notes", "Notes")
 
-_MESSAGES_WORDS = re.compile(r"\b(imessages?|messages)\b")
-_MESSAGING_WORDS = re.compile(r"\b(message|messages|text|recipients?|contacts?|send|chat)\b")
-_NOTES_WORDS = re.compile(r"\b(apple notes|notes app|notes)\b")
+#: App names as plans write them. Case-sensitive on purpose: "Open Notes" is
+#: the app, "take notes" is not.
+_MESSAGES_APP_RE = re.compile(r"\b(?:iMessages?|Messages app|(?:in|Open|open|the|to|via|or) Messages)\b")
+_NOTES_APP_RE = re.compile(r"\b(?:Apple Notes|Notes app|(?:in|Open|open|the|to|into) Notes)\b")
+_IMESSAGE_TASK_RE = re.compile(r"\bi?messages? app\b|\bimessages?\b", re.IGNORECASE)
+_MESSAGING_WORDS = re.compile(r"\b(?:message|messages|imessage|recipients?|contacts?|send)\b")
 
 
 def route_app(task_prompt: str, title: str, description: str) -> tuple[str, str] | None:
     """Which native app a step runs in, or None for the browser.
 
-    A step goes to Messages when it names Messages/iMessage, or when it is a
-    messaging step (message, recipient, send...) in a task that asked for
-    iMessage. That covers "Draft a short party message to Amogh" in a task
-    that said "via iMessages", which never names the app itself."""
-    step = f"{title} {description}".lower()
-    task = task_prompt.lower()
-    if _MESSAGES_WORDS.search(step):
+    A step goes to an app when its title or description names the app
+    ("Open Messages", "in Notes", "iMessage"). A messaging step (message,
+    recipient, send...) also goes to Messages when the task itself asked for
+    iMessage, which covers "Draft a short party message to Amogh" in a task
+    that said "via iMessages". Everything else is a browser step, including
+    research steps that merely say "take notes"."""
+    step = f"{title} {description}"
+    if _MESSAGES_APP_RE.search(step):
         return MESSAGES_APP
-    if _MESSAGING_WORDS.search(step) and _MESSAGES_WORDS.search(task):
-        return MESSAGES_APP
-    if _NOTES_WORDS.search(step):
+    if _NOTES_APP_RE.search(step):
         return NOTES_APP
+    if (_IMESSAGE_TASK_RE.search(task_prompt) or _MESSAGES_APP_RE.search(task_prompt)) and \
+            _MESSAGING_WORDS.search(step.lower()):
+        return MESSAGES_APP
     return None
 
 
@@ -308,6 +313,28 @@ class AppDesk(AgentDesk):
         if out.strip():
             return int(out.split()[0])
         raise RuntimeError(f"{self.app_name} did not start")
+
+    async def _require_on_screen(self) -> None:
+        """AX and window capture only work on a window that is on screen. A
+        minimized or hidden window comes back as ``ax_window_unresolved`` and
+        a blank capture, so fail the step clearly before any model call."""
+        assert self.target is not None
+        wins = await self.driver.list_windows(self.target.pid)
+        win = next((w for w in wins if int(w.get("window_id", -1)) == self.target.window_id), None)
+        if not win or win.get("is_on_screen") is not True:
+            raise RuntimeError(
+                f"{self.app_name}'s window is minimized, hidden or on another desktop, so the agent "
+                f"cannot see or use it. Open {self.app_name} on this desktop and run again.")
+
+    async def ensure(self, url: str | None = None) -> DeskTarget:
+        t = await super().ensure(url)
+        await self._require_on_screen()
+        return t
+
+    async def refresh_window(self) -> DeskTarget:
+        t = await super().refresh_window()
+        await self._require_on_screen()
+        return t
 
     async def close(self) -> None:
         return  # the user's app: never quit it

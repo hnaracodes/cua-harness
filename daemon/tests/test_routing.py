@@ -48,3 +48,52 @@ def test_app_request_uses_app_prompt_and_no_url_tool() -> None:
     assert "open_url" not in names and {"click_element", "type_into_element"} <= names
     assert "Messages app" in req["system"] and "Never pick a group" in req["system"]
     assert "already has that approval" in req["system"]
+
+
+def test_real_plans_route_with_full_step_text() -> None:
+    """Titles AND descriptions from three real plans. The Jev plan's step 2
+    says "Take notes to use in the document" and must stay in the browser."""
+    import json
+
+    cases = json.loads((Path(__file__).parent / "routing_cases.json").read_text())
+    expected = {
+        "iMessages": [None, None, None, MESSAGES_APP, MESSAGES_APP, MESSAGES_APP],
+        '"test"': [None, None, None, MESSAGES_APP, MESSAGES_APP, MESSAGES_APP],
+        "Jev": [None] * 7,
+    }
+    seen = 0
+    for case in cases:
+        key = next(k for k in expected if k in case["prompt"])
+        got = [route_app(case["prompt"], t, d) for t, d in case["steps"]]
+        assert got == expected[key], (key, list(zip([t for t, _ in case["steps"]], got)))
+        seen += 1
+    assert seen == 3
+
+
+def test_app_desk_refuses_a_minimized_window() -> None:
+    """Real Notes state on 2026-10-02: the only titled window is off screen."""
+    import json
+
+    import pytest
+
+    from oversight.cua import CuaDriver
+    from oversight.host_desk import AppDesk
+
+    wins = {"windows": [
+        {"window_id": 97, "layer": 0, "is_on_screen": False, "title": "Notes", "z_index": 5,
+         "bounds": {"width": 1000, "height": 660, "x": 0, "y": 0}},
+        {"window_id": 101, "layer": 0, "is_on_screen": False, "title": "", "z_index": 9,
+         "bounds": {"width": 500, "height": 500, "x": 0, "y": 0}},
+    ]}
+
+    async def runner(argv: list[str]) -> tuple[int, str, str]:
+        tool = argv[2]
+        if tool == "launch_app":
+            return 0, json.dumps({"pid": 701, "bundle_id": "com.apple.Notes"}), ""
+        if tool == "list_windows":
+            return 0, json.dumps(wins), ""
+        raise AssertionError(f"unexpected {tool}")
+
+    desk = AppDesk(CuaDriver(binary="cua-driver", runner=runner), *NOTES_APP)
+    with pytest.raises(RuntimeError, match="minimized"):
+        asyncio.run(desk.ensure())
