@@ -2,7 +2,8 @@ import { useCallback, useEffect, useState } from "react";
 import type { DaemonApi } from "../api/client";
 import type { SetupStatus } from "../api/types";
 import type { SetupStepKey } from "../screens";
-import { canContinue, canSkipPlanOnly, POLL_STEPS, STEPS, stepIndex, waitingText } from "./gating";
+import { canContinue, canSkipPlanOnly, planOnlyPatch, POLL_STEPS, STEPS, stepIndex, waitingText } from "./gating";
+import { msg } from "./errors";
 import { DriverStep, KeyStep, PermissionsStep, SelfTestStep, Welcome } from "./steps";
 import s from "./Wizard.module.css";
 
@@ -14,7 +15,7 @@ export function SetupWizard({ api, initialStep, onClose }: { api: DaemonApi; ini
 
   const refresh = useCallback(async () => {
     try { setStatus(await api.setupStatus()); setErr(null); }
-    catch (e) { setErr(`Can't reach the daemon: ${e instanceof Error ? e.message : String(e)}`); }
+    catch (e) { setErr(`Can't reach the daemon: ${msg(e)}`); }
   }, [api]);
   useEffect(() => { void refresh(); }, [refresh]);
   // Status changes outside the app (System Settings, the driver starting), so poll there.
@@ -29,10 +30,11 @@ export function SetupWizard({ api, initialStep, onClose }: { api: DaemonApi; ini
   const finish = async (planOnly: boolean) => {
     setBusy(true);
     try {
-      if (planOnly) await api.putSettings({ plan_only: true });
+      const patch = planOnlyPatch(planOnly, status);
+      if (patch) await api.putSettings(patch);
       await api.completeSetup();
       onClose();
-    } catch (e) { setErr(e instanceof Error ? e.message : String(e)); } finally { setBusy(false); }
+    } catch (e) { setErr(msg(e)); } finally { setBusy(false); }
   };
   const props = { api, status, refresh };
 

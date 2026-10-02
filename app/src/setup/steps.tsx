@@ -1,10 +1,9 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { DaemonApi } from "../api/client";
-import { HttpError } from "../api/client";
 import type { PermState, Provider, SetupStatus } from "../api/types";
+import { msg } from "./errors";
 import s from "./Wizard.module.css";
 
-const msg = (e: unknown) => (e instanceof HttpError ? String(e.body.error ?? e.message) : e instanceof Error ? e.message : String(e));
 export interface StepProps { api: DaemonApi; status: SetupStatus | null; refresh: () => Promise<void> }
 
 export function Welcome() {
@@ -23,7 +22,16 @@ export function Welcome() {
 }
 
 export function KeyStep({ api, status, refresh }: StepProps) {
-  const [provider, setProvider] = useState<Provider>(status?.key.provider ?? "anthropic");
+  const [provider, setProviderState] = useState<Provider>(status?.key.provider ?? "anthropic");
+  // Opened straight at this step (a Fix link), status is still null at mount: adopt the
+  // daemon's saved provider once it arrives, unless the user already picked one.
+  const touched = useRef(status != null);
+  const setProvider = (p: Provider) => { touched.current = true; setProviderState(p); };
+  useEffect(() => {
+    if (touched.current || !status) return;
+    touched.current = true;
+    setProviderState(status.key.provider);
+  }, [status]);
   const [key, setKey] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);

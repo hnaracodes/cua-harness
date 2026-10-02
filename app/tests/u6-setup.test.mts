@@ -1,7 +1,7 @@
 // app/tests/u6-setup.test.mts. Run: npm test
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { canContinue, canSkipPlanOnly, permsOk, POLL_STEPS, STEPS, waitingText } from "../src/setup/gating.ts";
+import { canContinue, canSkipPlanOnly, permsOk, planOnlyPatch, POLL_STEPS, STEPS, waitingText } from "../src/setup/gating.ts";
 import type { SetupStatus } from "../src/api/types.ts";
 
 const st = (over: Partial<SetupStatus> = {}): SetupStatus => ({
@@ -43,4 +43,11 @@ test("waitingText names what is missing", () => {
   assert.equal(waitingText("permissions", st({ permissions: { accessibility: "granted", screen_recording: "unknown" } })), "Waiting for Screen Recording…");
   assert.equal(waitingText("driver", st()), "Waiting for cua-driver to start…");
   assert.equal(waitingText("permissions", st({ permissions: { accessibility: "granted", screen_recording: "granted" } })), null);
+});
+
+test("finishing setup: skip sets plan-only, a full finish clears it, otherwise leave settings alone", () => {
+  assert.deepEqual(planOnlyPatch(true, st()), { plan_only: true });
+  assert.deepEqual(planOnlyPatch(false, st({ plan_only: true })), { plan_only: false });
+  assert.equal(planOnlyPatch(false, st({ plan_only: false })), null);
+  assert.equal(planOnlyPatch(false, null), null);
 });

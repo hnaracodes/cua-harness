@@ -37,3 +37,10 @@ export function waitingText(step: SetupStepKey, s: SetupStatus | null): string |
   }
   return null;
 }
+
+/** The settings change a wizard finish makes. Skipping turns plan-only on; a full finish
+ *  (self-test passed) is the way back out, so it turns plan-only off if it was on. */
+export function planOnlyPatch(skip: boolean, s: SetupStatus | null): { plan_only: boolean } | null {
+  if (skip) return { plan_only: true };
+  return s?.plan_only ? { plan_only: false } : null;
+}
