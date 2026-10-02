@@ -4,6 +4,7 @@ also checking testing/.env at each level."""
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -14,6 +15,34 @@ APPDEV_DIR = DAEMON_DIR.parent
 
 DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-5-5"
 DEFAULT_OPENAI_MODEL = "gpt-5.5"
+
+#: The Tauri bundle identifier (app/src-tauri/tauri.conf.json). The packaged daemon keeps
+#: user data in the same per-user folder Tauri's app_data_dir() resolves to.
+APP_IDENTIFIER = "edu.cmu.sketch-oversight.agent-oversight"
+
+
+def is_frozen() -> bool:
+    """True inside the PyInstaller sidecar shipped with the packaged app."""
+    return bool(getattr(sys, "frozen", False))
+
+
+def user_data_dir() -> Path:
+    if sys.platform == "darwin":
+        base = Path.home() / "Library" / "Application Support"
+    elif sys.platform == "win32":
+        base = Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming")
+    else:
+        base = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share")
+    return base / APP_IDENTIFIER
+
+
+def default_data_dir() -> Path:
+    """`OVERSIGHT_DATA_DIR`, else the per-user app folder when frozen (the bundle is
+    read-only and the frozen source tree is a temp dir), else daemon/.data."""
+    env = os.environ.get("OVERSIGHT_DATA_DIR")
+    if env:
+        return Path(env)
+    return user_data_dir() if is_frozen() else DAEMON_DIR / ".data"
 
 
 def find_env_file(start: Path = DAEMON_DIR) -> Path | None:
@@ -84,7 +113,7 @@ class Settings:
     api_key_present: bool = False
     env_file: str | None = None
     keychain_warning: str | None = None
-    data_dir: Path = field(default_factory=lambda: DAEMON_DIR / ".data")
+    data_dir: Path = field(default_factory=default_data_dir)
 
     @property
     def display_provider(self) -> str:
@@ -126,7 +155,7 @@ def load_settings(fixtures: bool = False, exec_mode: str | None = None,
     )
     key_present = anthropic_key if provider == "anthropic" else openai_key
 
-    data_dir = Path(os.environ.get("OVERSIGHT_DATA_DIR") or (DAEMON_DIR / ".data"))
+    data_dir = default_data_dir()
     data_dir.mkdir(parents=True, exist_ok=True)
 
     if exec_mode is None:

@@ -267,6 +267,30 @@ live mode it drives the real desktop.
 Agent screenshots during a run are window-scoped and kept in memory only. The
 model sees the last 3; older ones are pruned. They are not written to disk.
 
+The packaged app (section 6b) keeps the store, frames and window-desk profile in
+`~/Library/Application Support/edu.cmu.sketch-oversight.agent-oversight/` instead.
+
+## 6b. Package a downloadable build (macOS)
+
+```sh
+# export the repo-local Rust env first (section 1)
+cd app && npm run package
+```
+
+This freezes the daemon with PyInstaller (`daemon/packaging/build.sh`, about 20 s)
+into `app/src-tauri/binaries/oversight-daemon-<triple>`, then runs `tauri build` with
+`src-tauri/tauri.release.conf.json` merged in (bundling on, the sidecar as
+`externalBin`, ad-hoc signing). Output: `app/src-tauri/target/release/bundle/macos/Agent
+Oversight.app` and `bundle/dmg/*.dmg`. `tauri dev` is unaffected: debug builds still
+run `uv run oversight-daemon` from the source tree.
+
+The recipient needs no Python, uv or repo. The first-run wizard installs cua-driver and
+walks through the API key and macOS permissions. The build is ad-hoc signed, not
+notarized, so the first open is right-click > Open (or System Settings > Privacy &
+Security > Open Anyway). It is built for the packager's architecture only (Apple
+Silicon here), and the app and daemon both use port 8765: quit any dev daemon first,
+or the app will attach to it instead of its own.
+
 ## 7. Tests
 
 ```sh

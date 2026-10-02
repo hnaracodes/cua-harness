@@ -24,6 +24,7 @@ oversight-daemon = "oversight.cli:main"
 
 [dependency-groups]
 dev = ["pytest>=8.2", "pytest-timeout>=2.3"]
+packaging = ["pyinstaller>=6.10"]
 
 [tool.uv.sources]
 peripheral = { path = "../../testing", editable = true }

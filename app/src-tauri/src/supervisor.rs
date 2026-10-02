@@ -103,10 +103,22 @@ pub fn augment_path(cur: &str, home: &str) -> String {
     parts.join(":")
 }
 
-/// Dev layout: app/src-tauri/../../daemon == appdev/daemon. The packaging
-/// sub-project replaces this with a sidecar binary (seam: `daemon_command`).
+/// Dev layout: app/src-tauri/../../daemon == appdev/daemon. Packaged builds run the
+/// sidecar instead (`sidecar_path`).
 pub fn default_daemon_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("..").join("daemon")
+}
+
+/// The frozen daemon that `externalBin` places next to the app binary
+/// (Contents/MacOS/oversight-daemon on macOS). Debug builds ignore it, because
+/// `tauri dev` copies sidecars too and dev must keep running the source daemon.
+pub fn sidecar_path() -> Option<PathBuf> {
+    if cfg!(debug_assertions) {
+        return None;
+    }
+    let name = if cfg!(windows) { "oversight-daemon.exe" } else { "oversight-daemon" };
+    let path = std::env::current_exe().ok()?.parent()?.join(name);
+    path.is_file().then_some(path)
 }
 
 use std::io::{BufRead, BufReader, Read, Write};
@@ -129,10 +141,17 @@ pub fn health_ok(addr: &str, timeout: Duration) -> bool {
     is_http_ok(&buf[..n])
 }
 
-/// `OVERSIGHT_DAEMON_CMD` wins; else `uv run oversight-daemon` in appdev/daemon.
+/// `OVERSIGHT_DAEMON_CMD` wins; else the bundled sidecar (release builds); else
+/// `uv run oversight-daemon` in appdev/daemon.
 pub fn daemon_command() -> ((String, Vec<String>), PathBuf) {
-    let cmd = std::env::var("OVERSIGHT_DAEMON_CMD").ok().and_then(|s| parse_command(&s));
-    (cmd.unwrap_or_else(|| ("uv".into(), vec!["run".into(), "oversight-daemon".into()])), default_daemon_dir())
+    if let Some(cmd) = std::env::var("OVERSIGHT_DAEMON_CMD").ok().and_then(|s| parse_command(&s)) {
+        return (cmd, default_daemon_dir());
+    }
+    if let Some(bin) = sidecar_path() {
+        let dir = bin.parent().map(PathBuf::from).unwrap_or_default();
+        return ((bin.to_string_lossy().into_owned(), vec![]), dir);
+    }
+    (("uv".into(), vec!["run".into(), "oversight-daemon".into()]), default_daemon_dir())
 }
 
 struct Inner {

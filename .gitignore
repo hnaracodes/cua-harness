@@ -11,6 +11,7 @@ __pycache__/
 *.pyc
 .venv/
 daemon/.data/
+daemon/build/
 .pytest_cache/
 .ruff_cache/
 # node / tauri
@@ -18,6 +19,7 @@ node_modules/
 dist/
 app/src-tauri/target/
 app/src-tauri/gen/
+app/src-tauri/binaries/
 .DS_Store
 
 # design scratch (brainstorm companion, playwright screenshots)

@@ -40,6 +40,10 @@ def appdev_root() -> Path:
 
 
 def default_profile_dir() -> str:
+    from oversight.settings import default_data_dir, is_frozen
+
+    if is_frozen() and not os.environ.get("OVERSIGHT_APPDEV_ROOT"):
+        return str(default_data_dir() / "agent-desk" / "chrome-profile")
     return str(appdev_root() / ".agent-desk" / "chrome-profile")
 
 
