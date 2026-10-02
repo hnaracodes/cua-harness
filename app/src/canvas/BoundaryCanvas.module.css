@@ -1,0 +1,51 @@
+.wrap { position: relative; height: 100%; min-height: 240px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); overflow: hidden; }
+.svg { display: block; touch-action: none; user-select: none; -webkit-user-select: none; outline: none; }
+.plotBg { fill: var(--surface); }
+.grid { stroke: var(--grid); stroke-width: 1; }
+.gridFine { stroke: var(--grid); stroke-width: 1; opacity: 0.55; }
+.poly { fill: var(--ok); fill-opacity: 0.12; stroke: var(--ok); stroke-width: 2; stroke-linejoin: round; }
+.polyDrawing { fill: var(--ok); fill-opacity: 0.08; stroke: var(--ok); stroke-width: 2; stroke-dasharray: 5 4; }
+.polyHover { fill: none; stroke: var(--ok); stroke-width: 4; stroke-opacity: 0.35; }
+.handle { fill: var(--bg); stroke: var(--text); stroke-width: 1.5; }
+.handleActive { fill: var(--ok); stroke: var(--text); stroke-width: 1.5; }
+.badge { cursor: pointer; }
+.disk { stroke: rgba(255, 255, 255, 0.25); stroke-width: 1; }
+.badge[data-status="approved"] .disk { fill: var(--ok); }
+.badge[data-status="pending"] .disk { fill: var(--pend); }
+.badge[data-status="mixed"] .disk { fill: var(--raised); stroke: var(--text-2); stroke-dasharray: 3 2; }
+.badge[data-status="removed"] .disk { fill: transparent; stroke: var(--rm); stroke-dasharray: 3 2.5; stroke-width: 1.2; }
+.num { fill: var(--bg); font: 700 11px var(--font); text-anchor: middle; pointer-events: none; }
+.badge[data-status="removed"] .num, .badge[data-status="mixed"] .num { fill: var(--text); }
+.badge[data-status="removed"] .num { fill: var(--rm); }
+.ring { fill: none; stroke: var(--accent); stroke-width: 2; }
+.hoverRing { fill: none; stroke: var(--text-2); stroke-width: 1.5; }
+.anchor { fill: var(--text); pointer-events: none; }
+.leader { stroke: var(--text-3); stroke-width: 1; }
+.fanHalo { fill: var(--bg); fill-opacity: 0.55; stroke: var(--line); stroke-dasharray: 3 3; }
+.fanBtn { cursor: pointer; }
+.fanBtn circle { fill: var(--raised); stroke: var(--line); }
+.fanBtn path { fill: none; stroke-width: 1.8; stroke-linecap: round; }
+.fanOk path { stroke: var(--ok); }
+.fanRm path { stroke: var(--rm); }
+.axisText { fill: var(--text-3); font: 10px var(--font); }
+.axisName { fill: var(--text-2); font: 600 11px var(--font); }
+.tip { position: absolute; z-index: 5; background: var(--raised); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 10px 12px; box-shadow: var(--shadow); font-size: var(--fs-sm); pointer-events: none; }
+.tipHead { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+.tipStatus { color: var(--text-3); white-space: nowrap; }
+.tipStatus[data-status="approved"] { color: var(--ok); }
+.tipStatus[data-status="pending"] { color: var(--pend); }
+.tipStatus[data-status="removed"] { color: var(--rm); }
+.tipDim { margin-top: 4px; color: var(--text-2); }
+.tipDim b { color: var(--text); }
+.tipWhy { color: var(--text-3); }
+.toolbar { position: absolute; left: 12px; bottom: 12px; display: flex; align-items: center; gap: 2px; padding: 3px; background: var(--raised); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); }
+.tool { border: 0; background: transparent; border-radius: 7px; padding: 5px 8px; font-size: var(--fs-sm); cursor: pointer; color: var(--text); }
+.tool:hover:not(:disabled) { background: var(--surface); }
+.tool:disabled { opacity: 0.4; cursor: default; }
+.toolOn { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
+.toolOn:hover { background: var(--accent) !important; }
+.sep { width: 1px; height: 18px; background: var(--line); margin: 0 3px; }
+.zoomLabel { min-width: 42px; text-align: center; font: 11px var(--mono); color: var(--text-2); }
+.minimap { position: absolute; right: 12px; bottom: 12px; width: 120px; height: 76px; background: var(--bg); border: 1px solid var(--line); border-radius: var(--r-sm); cursor: pointer; }
+.miniView { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1; }
+.coach { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); white-space: nowrap; padding: 6px 14px; border-radius: var(--r-pill); background: var(--raised); border: 1px solid var(--line); color: var(--text-2); font-size: var(--fs-sm); pointer-events: none; }
