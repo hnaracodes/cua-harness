@@ -11,7 +11,9 @@ import json
 import logging
 import math
 import os
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -24,13 +26,19 @@ from sse_starlette.sse import EventSourceResponse
 from . import approval, executor, fixtures
 from .dimensions import DIMENSION_KEYS, load_dimensions
 from .events import EventBus
-from .llm import CallRecord, LLMError, StructuredLLM
+from .llm import CallRecord, ImageInput, LLMError, StructuredLLM
 from .planner import plan_task
-from .scorer import SCORER_VERSION, LLMScorer, StepView, content_hash, score_plan
+from .routes import attachments as attachments_routes
+from .routes import frames as frames_routes
+from .routes import revise as revise_routes
+from .routes import setup as setup_routes
+from .routes.ctx import Ctx
+from .scorer import SCORER_VERSION, LLMScorer, StepView, content_hash
 from .settings import Settings, cua_driver_status
 from .store import Store, new_id
 
 log = logging.getLogger("oversight")
+MAX_ATTACHMENTS = 4
 
 
 def err(status: int, message: str, **extra: Any) -> JSONResponse:
@@ -43,6 +51,7 @@ def err(status: int, message: str, **extra: Any) -> JSONResponse:
 class TaskBody(BaseModel):
     prompt: str
     selected_app: str | None = None
+    attachment_ids: list[str] = []
 
 
 class BoundaryBody(BaseModel):
@@ -169,6 +178,8 @@ def create_app(settings: Settings) -> FastAPI:
             "cost_usd_total": st.session_cost,
             "cost_usd_all_time": store.total_cost(),
             "status_line": status_line,
+            "setup_complete": bool(store.get_setting("setup_complete", False)),
+            "plan_only": bool(store.get_setting("plan_only", False)),
         }
 
     @app.get("/dimensions")
@@ -191,8 +202,14 @@ def create_app(settings: Settings) -> FastAPI:
         prompt = body.prompt.strip()
         if not prompt:
             return err(400, "prompt is empty")
+        if len(body.attachment_ids) > MAX_ATTACHMENTS:
+            return err(400, f"at most {MAX_ATTACHMENTS} images per task")
+        unknown = [a for a in body.attachment_ids if store.get_attachment(a) is None]
+        if unknown:
+            return err(400, "unknown attachment ids", unknown=unknown)
         tid = store.create_task(prompt, body.selected_app,
                                 "fixtures" if settings.fixtures else "live")
+        store.link_attachments(tid, body.attachment_ids)
         return {"task_id": tid}
 
     @app.get("/task/{task_id}")
@@ -201,7 +218,9 @@ def create_app(settings: Settings) -> FastAPI:
         if task is None:
             return err(404, "task not found", task_id=task_id)
         return {
-            "task": task,
+            "task": {**task, "attachments": [
+                {k: a[k] for k in ("attachment_id", "mime", "bytes")}
+                for a in store.get_task_attachments(task_id)]},
             "steps": store.get_steps(task_id),
             "scores": store.get_scores(task_id),
             "boundaries": store.get_boundaries(task_id),
@@ -222,6 +241,45 @@ def create_app(settings: Settings) -> FastAPI:
     async def progress(task_id: str, stage: str, message: str, done: int, total: int) -> None:
         await bus.emit(task_id, None, "plan_progress",
                        {"stage": stage, "message": message, "done": done, "total": total})
+
+    async def score_steps(task_id: str, prompt: str, steps: list[dict], *,
+                          context: list[dict] | None = None,
+                          on_done: Callable[[StepView], Awaitable[None]] | None = None
+                          ) -> list[dict]:
+        """Score `steps` on all ten dimensions; the scorer sees `context` (default: steps)."""
+        if settings.fixtures:
+            return [sc.to_api() for sc in fixtures.scores_for_steps(steps)]
+        assert st.llm is not None
+
+        async def on_call(rec: CallRecord) -> None:
+            await record_call(task_id, None, rec)
+
+        model = f"{settings.model}|scorer-v{SCORER_VERSION}"
+        scorer = LLMScorer(st.llm,
+                           cache_get=lambda h: store.cache_get(h, model),
+                           cache_put=lambda h, v: store.cache_put(h, model, v),
+                           on_call=on_call)
+        def view(s: dict) -> StepView:
+            return StepView(s["id"], s["index"], s["title"], s["description"])
+
+        ctx_views = [view(s) for s in (context or steps)]
+
+        async def one(v: StepView) -> list:
+            res = await scorer.score(prompt, v, ctx_views)
+            if on_done:
+                await on_done(v)
+            return res
+
+        results = await asyncio.gather(*(one(view(s)) for s in steps))
+        return [sc.to_api() for r in results for sc in r]
+
+    def load_images(task_id: str) -> list[ImageInput]:
+        out = []
+        for a in store.get_task_attachments(task_id):
+            p = Path(a["path"])
+            if p.is_file():
+                out.append(ImageInput(a["mime"], p.read_bytes()))
+        return out
 
     async def plan_fixtures(task_id: str) -> tuple[list[dict], list[dict]]:
         total = len(fixtures.STEPS)
@@ -252,7 +310,8 @@ def create_app(settings: Settings) -> FastAPI:
             await record_call(task_id, None, rec)
 
         await progress(task_id, "planning", "Generating plan.", 0, 0)
-        planned = await plan_task(st.llm, prompt, selected_app, on_call=on_call)
+        planned = await plan_task(st.llm, prompt, selected_app, on_call=on_call,
+                                  images=load_images(task_id))
         steps = [{"id": new_id("stp"), "task_id": task_id, "index": i + 1, "title": p.title,
                   "description": p.description, "glyph": p.glyph, "status": "pending",
                   "edited_from": None, "revision": 0} for i, p in enumerate(planned)]
@@ -260,12 +319,6 @@ def create_app(settings: Settings) -> FastAPI:
         await progress(task_id, "scoring",
                        "Preparing oversight view. Scoring actions and placing them on the grid.",
                        0, total)
-        model = f"{settings.model}|scorer-v{SCORER_VERSION}"
-        scorer = LLMScorer(st.llm,
-                           cache_get=lambda h: store.cache_get(h, model),
-                           cache_put=lambda h, v: store.cache_put(h, model, v),
-                           on_call=on_call)
-        views = [StepView(s["id"], s["index"], s["title"], s["description"]) for s in steps]
         done = 0
 
         async def on_done(v: StepView) -> None:
@@ -273,8 +326,7 @@ def create_app(settings: Settings) -> FastAPI:
             done += 1
             await progress(task_id, "scoring", f"Scored step {v.index}.", done, total)
 
-        scores = await score_plan(scorer, prompt, views, on_done=on_done)
-        return steps, [sc.to_api() for sc in scores]
+        return steps, await score_steps(task_id, prompt, steps, on_done=on_done)
 
     @app.post("/task/{task_id}/plan")
     async def plan(task_id: str, force: bool = False):
@@ -551,6 +603,13 @@ def create_app(settings: Settings) -> FastAPI:
                 bus.unsubscribe(task_id, q)
 
         return EventSourceResponse(gen(), ping=15)
+
+    ctx = Ctx(st=st, record_call=record_call, progress=progress,
+              scores_snapshot=scores_snapshot, score_steps=score_steps,
+              load_images=load_images)
+    app.state.ctx = ctx
+    for mod in (setup_routes, attachments_routes, revise_routes, frames_routes):
+        mod.register(app, ctx)
 
     return app
 

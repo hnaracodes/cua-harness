@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
-from .llm import CallRecord, LLMError, StructuredLLM
+from .llm import CallRecord, ImageInput, LLMError, StructuredLLM
 
 GLYPHS = ("search", "compare", "cart", "message", "send", "contacts", "browse",
           "document", "calendar", "payment", "settings", "generic")
@@ -76,7 +77,7 @@ def validate_plan(data: dict) -> list[PlannedStep]:
 
 
 async def plan_task(llm: StructuredLLM, prompt: str, selected_app: str | None,
-                    on_call=None) -> list[PlannedStep]:
+                    on_call=None, images: Sequence[ImageInput] = ()) -> list[PlannedStep]:
     """Returns validated steps. Retries once on invalid output. `on_call(record)` is
     awaited after every LLM call for cost accounting."""
     user = f"Task: {prompt}"
@@ -87,7 +88,7 @@ async def plan_task(llm: StructuredLLM, prompt: str, selected_app: str | None,
         try:
             data, rec = await llm.call(scope="plan", system=SYSTEM, user=user,
                                        schema=PLAN_SCHEMA, schema_name="plan",
-                                       effort="medium", max_tokens=8000)
+                                       effort="medium", max_tokens=8000, images=images)
         except LLMError as e:
             if on_call and e.record:
                 await on_call(e.record)

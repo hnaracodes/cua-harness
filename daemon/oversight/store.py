@@ -101,6 +101,33 @@ CREATE TABLE IF NOT EXISTS llm_calls (
     error TEXT,
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS attachments (
+    id TEXT PRIMARY KEY,
+    sha256 TEXT NOT NULL UNIQUE,
+    mime TEXT NOT NULL,
+    bytes INTEGER NOT NULL,
+    path TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS task_attachments (
+    task_id TEXT NOT NULL,
+    attachment_id TEXT NOT NULL,
+    ord INTEGER NOT NULL,
+    PRIMARY KEY (task_id, attachment_id)
+);
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS frames (
+    task_id TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    run_id TEXT NOT NULL,
+    step_id TEXT NOT NULL,
+    path TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (task_id, seq)
+);
 """
 
 
@@ -155,6 +182,16 @@ class Store:
     # ------------------------------------------------------------ steps + scores
     def replace_plan(self, task_id: str, steps: list[dict], scores: list[dict]) -> None:
         """Swap in a new plan. Also drops the task's stored boundaries (see below)."""
+        self._write_plan(task_id, steps, scores, keep_boundaries=False)
+
+    def revise_plan(self, task_id: str, steps: list[dict], scores: list[dict]) -> None:
+        """Swap in a revised plan (re-propose). Boundaries are KEPT: kept steps keep their
+        scores, so the user's polygon still means what it meant; new steps are pending
+        until the polygon or a check approves them, exactly like any other step."""
+        self._write_plan(task_id, steps, scores, keep_boundaries=True)
+
+    def _write_plan(self, task_id: str, steps: list[dict], scores: list[dict],
+                    keep_boundaries: bool) -> None:
         with self._lock:
             self.db.execute("BEGIN")
             try:
@@ -163,10 +200,11 @@ class Store:
                 for sid in old:
                     self.db.execute("DELETE FROM scores WHERE step_id=?", (sid,))
                 self.db.execute("DELETE FROM steps WHERE task_id=?", (task_id,))
-                # Polygons were drawn against the old plan's scores. Keeping them would let
-                # a run with `boundaries` omitted approve new steps nobody looked at. Runs
-                # keep their own copy of the boundaries they used, so history survives.
-                self.db.execute("DELETE FROM boundaries WHERE task_id=?", (task_id,))
+                if not keep_boundaries:
+                    # Polygons were drawn against the old plan's scores. Keeping them would let
+                    # a run with `boundaries` omitted approve new steps nobody looked at. Runs
+                    # keep their own copy of the boundaries they used, so history survives.
+                    self.db.execute("DELETE FROM boundaries WHERE task_id=?", (task_id,))
                 for s in steps:
                     self.db.execute(
                         "INSERT INTO steps (id, task_id, idx, title, description, glyph, status, "
@@ -178,6 +216,28 @@ class Store:
                         "INSERT INTO scores (step_id, dimension, label, position, confidence, "
                         "rationale) VALUES (?,?,?,?,?,?)",
                         (sc["step_id"], sc["dimension"], sc["label"], sc["position"],
+                         sc["confidence"], sc["rationale"]))
+                self.db.execute("COMMIT")
+            except Exception:
+                self.db.execute("ROLLBACK")
+                raise
+
+    def update_step(self, step_id: str, title: str, description: str,
+                    edited_from: str | None) -> None:
+        """User edit. `edited_from` keeps the FIRST original title across repeated edits."""
+        self._x("UPDATE steps SET title=?, description=?, edited_from=COALESCE(edited_from, ?), "
+                "revision=revision+1 WHERE id=?", (title, description, edited_from, step_id))
+
+    def replace_step_scores(self, step_id: str, scores: list[dict]) -> None:
+        with self._lock:
+            self.db.execute("BEGIN")
+            try:
+                self.db.execute("DELETE FROM scores WHERE step_id=?", (step_id,))
+                for sc in scores:
+                    self.db.execute(
+                        "INSERT INTO scores (step_id, dimension, label, position, confidence, "
+                        "rationale) VALUES (?,?,?,?,?,?)",
+                        (step_id, sc["dimension"], sc["label"], sc["position"],
                          sc["confidence"], sc["rationale"]))
                 self.db.execute("COMMIT")
             except Exception:
@@ -325,3 +385,56 @@ class Store:
     def get_llm_calls(self, task_id: str) -> list[dict]:
         rows = self._q("SELECT * FROM llm_calls WHERE task_id=? ORDER BY created_at", (task_id,))
         return [dict(r) for r in rows]
+
+    # ------------------------------------------------------------ attachments
+    def add_attachment(self, sha256: str, mime: str, size: int, path: str) -> str:
+        with self._lock:
+            row = self.db.execute("SELECT id FROM attachments WHERE sha256=?",
+                                  (sha256,)).fetchone()
+            if row is not None:
+                return str(row["id"])
+            aid = new_id("att")
+            self.db.execute(
+                "INSERT INTO attachments (id, sha256, mime, bytes, path, created_at) "
+                "VALUES (?,?,?,?,?,?)", (aid, sha256, mime, size, path, now_iso()))
+            return aid
+
+    def get_attachment(self, attachment_id: str) -> dict | None:
+        rows = self._q("SELECT * FROM attachments WHERE id=?", (attachment_id,))
+        return dict(rows[0]) if rows else None
+
+    def link_attachments(self, task_id: str, attachment_ids: list[str]) -> None:
+        with self._lock:
+            for i, aid in enumerate(attachment_ids):
+                self.db.execute("INSERT OR IGNORE INTO task_attachments (task_id, attachment_id, "
+                                "ord) VALUES (?,?,?)", (task_id, aid, i))
+
+    def get_task_attachments(self, task_id: str) -> list[dict]:
+        rows = self._q("SELECT a.id, a.mime, a.bytes, a.path FROM task_attachments ta "
+                       "JOIN attachments a ON a.id=ta.attachment_id WHERE ta.task_id=? "
+                       "ORDER BY ta.ord", (task_id,))
+        return [{"attachment_id": r["id"], "mime": r["mime"], "bytes": r["bytes"],
+                 "path": r["path"]} for r in rows]
+
+    # ------------------------------------------------------------ settings
+    def get_setting(self, key: str, default: Any = None) -> Any:
+        rows = self._q("SELECT value FROM settings WHERE key=?", (key,))
+        return json.loads(rows[0]["value"]) if rows else default
+
+    def set_setting(self, key: str, value: Any) -> None:
+        self._x("INSERT INTO settings (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, json.dumps(value)))
+
+    # ------------------------------------------------------------ frames
+    def add_frame(self, task_id: str, run_id: str, step_id: str, path: str) -> int:
+        with self._lock:
+            row = self.db.execute("SELECT COALESCE(MAX(seq), 0) AS m FROM frames WHERE task_id=?",
+                                  (task_id,)).fetchone()
+            seq = int(row["m"]) + 1
+            self.db.execute("INSERT INTO frames (task_id, seq, run_id, step_id, path, created_at) "
+                            "VALUES (?,?,?,?,?,?)", (task_id, seq, run_id, step_id, path, now_iso()))
+            return seq
+
+    def get_frame(self, task_id: str, seq: int) -> dict | None:
+        rows = self._q("SELECT * FROM frames WHERE task_id=? AND seq=?", (task_id, seq))
+        return dict(rows[0]) if rows else None

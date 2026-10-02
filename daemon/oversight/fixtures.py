@@ -18,6 +18,9 @@ or external, action uncertainty medium.
 
 from __future__ import annotations
 
+import hashlib
+
+from .dimensions import load_dimensions
 from .scorer import DimensionScore, Verdict, verdicts_to_scores
 
 TASK_PROMPT = (
@@ -144,4 +147,26 @@ def fixture_scores(step_ids_by_index: dict[int, str]) -> list[DimensionScore]:
     out: list[DimensionScore] = []
     for idx, sid in sorted(step_ids_by_index.items()):
         out.extend(verdicts_to_scores(sid, SCORES[idx]))
+    return out
+
+
+def synthetic_scores(step_id: str, title: str) -> list[DimensionScore]:
+    """Deterministic made-up scores for a step that is not in the fixture plan
+    (fixture-mode re-propose and edit). Same title -> same point, always."""
+    verdicts: dict[str, Verdict] = {}
+    for d in load_dimensions():
+        h = int(hashlib.sha256(f"{title}|{d.key}".encode()).hexdigest(), 16)
+        verdicts[d.key] = Verdict(d.labels[h % len(d.labels)], ((h >> 8) % 100) / 100, 0.5,
+                                  "Synthetic fixture score (fixtures mode).")
+    return verdicts_to_scores(step_id, verdicts)
+
+
+def scores_for_steps(steps: list[dict]) -> list[DimensionScore]:
+    """Fixture-mode scoring for any steps: fixture titles get their authored scores."""
+    by_title = {t: i + 1 for i, (t, _d, _g) in enumerate(STEPS)}
+    out: list[DimensionScore] = []
+    for s in steps:
+        idx = by_title.get(s["title"])
+        out.extend(verdicts_to_scores(s["id"], SCORES[idx]) if idx is not None
+                   else synthetic_scores(s["id"], s["title"]))
     return out
