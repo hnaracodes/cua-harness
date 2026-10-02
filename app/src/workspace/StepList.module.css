@@ -1,0 +1,19 @@
+.list { display: flex; flex-direction: column; gap: 4px; max-height: 190px; overflow-y: auto; padding: 0 16px; }
+.row { display: flex; align-items: center; gap: 9px; padding: 6px 10px; border-radius: var(--r-sm); background: var(--surface); border: 1px solid var(--line); cursor: default; transition: border-color var(--dur) var(--ease); }
+.hovered, .selected { border-color: var(--text-3); }
+.selected { box-shadow: 0 0 0 1px var(--accent) inset; }
+.num { width: 20px; height: 20px; flex: none; border-radius: 50%; display: grid; place-items: center; font-size: 10.5px; font-weight: 700; color: var(--accent-ink); }
+.approved .num { background: var(--ok); }
+.pending .num { background: var(--pend); }
+.removed .num { background: transparent; border: 1px dashed var(--rm); color: var(--rm); }
+.removed .title { text-decoration: line-through; color: var(--text-3); }
+.title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acts { display: flex; gap: 8px; align-items: center; color: var(--text-3); }
+.icon, .link, .approve { background: none; border: none; padding: 2px 4px; cursor: pointer; color: var(--text-3); }
+.icon:hover, .link:hover { color: var(--text); }
+.approve { color: var(--ok); }
+.edit { flex: 1; display: flex; flex-direction: column; gap: 6px; }
+.edit input, .edit textarea { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; resize: vertical; }
+.editBtns { display: flex; gap: 6px; }
+.btn, .btnPri { border-radius: var(--r-pill); padding: 4px 11px; border: 1px solid var(--line); background: var(--raised); cursor: pointer; }
+.btnPri { background: var(--accent); color: var(--accent-ink); border-color: transparent; font-weight: 600; }

@@ -1,0 +1,9 @@
+.bar { padding: 12px 16px; display: flex; flex-direction: column; gap: 8px; }
+.row { display: flex; align-items: center; gap: 8px; }
+.spacer { flex: 1; }
+.hint { color: var(--text-3); font-size: var(--fs-sm); }
+.btn, .primary { border-radius: var(--r-pill); padding: 7px 14px; border: 1px solid var(--line); background: var(--surface); cursor: pointer; }
+.primary { background: var(--accent); color: var(--accent-ink); border-color: transparent; font-weight: 600; }
+.primary:disabled { opacity: 0.5; cursor: default; }
+.error { border: 1px solid var(--rm); background: var(--rm-soft); border-radius: var(--r-sm); padding: 8px 10px; font-size: var(--fs-sm); }
+.mono { font-family: var(--mono); font-size: 11px; }
