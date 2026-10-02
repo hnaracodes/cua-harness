@@ -43,6 +43,9 @@ STEP1 = ExecStep(
     description="Use a shopping website or search engine to look for tennis rackets priced under $100 "
     "that would be suitable as a birthday gift.",
 )
+# Executor-internal events the daemon consumes itself and never forwards: "frame"
+# carries the raw window PNG (bytes), which json.dumps cannot serialize.
+INTERNAL_KINDS = frozenset({"frame"})
 TASK = ("Help me find a tennis racket less than $100 for my friends birthday present, and prepare a short "
         "message to my other friends to let them know I am planning a party via whatsapp.")
 
@@ -223,6 +226,8 @@ async def live_step1(desk: AgentDesk | BrowserDesk, driver: CuaDriver) -> dict:
     events: list[tuple[str, dict]] = []
 
     async def emit(kind: str, payload: dict) -> None:
+        if kind in INTERNAL_KINDS:
+            return
         events.append((kind, payload))
         print(f"  [{kind}] {json.dumps(payload)[:220]}", flush=True)
 
@@ -243,6 +248,8 @@ async def live_step1(desk: AgentDesk | BrowserDesk, driver: CuaDriver) -> dict:
 
 async def simulated() -> dict:
     async def emit(kind: str, payload: dict) -> None:
+        if kind in INTERNAL_KINDS:
+            return
         print(f"  [{kind}] {json.dumps(payload)[:200]}", flush=True)
 
     return await run_steps(TASK, [STEP1], frozenset({STEP1.id}), emit, asyncio.Event(),
