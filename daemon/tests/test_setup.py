@@ -503,3 +503,20 @@ def test_no_origin_keeps_full_capability(client):
     assert client.post("/setup/driver/install").json()["ok"] is True
     assert ["/bin/bash", "-c", setup.INSTALL_CMD] in calls
     assert client.get("/health").status_code == 200
+
+
+def test_startup_keychain_warning_reaches_setup_status(tmp_path):
+    """Settings.keychain_warning (computed once at startup) shows in key.warning when
+    no newer warning exists; a live keychain failure is newer and wins."""
+    startup = "System keychain unavailable (RuntimeError); using environment keys."
+    s = Settings(fixtures=True, exec_mode="simulated", data_dir=tmp_path,
+                 keychain_warning=startup)
+    with TestClient(create_app(s)) as c:
+        _use(c, make_env()[0])
+        assert c.get("/setup/status").json()["key"]["warning"] == startup
+        _use(c, make_env(keyring=FakeKeyring(broken=True))[0])
+        assert c.get("/setup/status").json()["key"]["warning"] == setup.KEYCHAIN_WARNING
+    with TestClient(create_app(Settings(fixtures=True, exec_mode="simulated",
+                                        data_dir=tmp_path))) as c:
+        _use(c, make_env()[0])
+        assert c.get("/setup/status").json()["key"]["warning"] is None

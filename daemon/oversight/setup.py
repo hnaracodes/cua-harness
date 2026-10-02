@@ -276,6 +276,8 @@ async def status(env: SetupEnv, store: Any, settings: Any) -> dict:
     driver installed + running, both permissions granted (or n/a), self-test passed)."""
     provider = settings.provider if settings.provider in ENV_VARS else "anthropic"
     key = key_status(env, store, provider)
+    if key["warning"] is None:  # a live keychain failure is newer than the startup one
+        key["warning"] = getattr(settings, "keychain_warning", None)
     driver = await driver_status(env)
     perms = await permission_status(env, env.find_binary() if driver["installed"] else None)
     passed = store.get_setting("self_test_passed_at", None)
