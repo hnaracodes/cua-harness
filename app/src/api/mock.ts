@@ -42,6 +42,8 @@ interface MockTask {
   attachments: Attachment[];
   runs: RunRecord[];
   revision: number;
+  frameSeq: number;
+  frames: Map<number, string>;
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -134,6 +136,7 @@ export function createMockDaemon(): DaemonApi {
         createdAt: new Date().toISOString(),
         attachments: attachmentIds.map((a) => blobs.get(a)!.att),
         runs: [], revision: 0,
+        frameSeq: 0, frames: new Map(),
       });
       return { task_id: id };
     },
@@ -275,7 +278,7 @@ export function createMockDaemon(): DaemonApi {
       if (patch.description?.trim()) s.description = patch.description.trim();
       return { step: { ...s }, scores: t.scores.filter((x) => x.step_id === stepId).map((x) => ({ ...x })) };
     },
-    frameUrl: () => "",
+    frameUrl: (taskId: string, seq: number) => tasks.get(taskId)?.frames.get(seq) ?? "",
     async setupStatus(): Promise<SetupStatus> {
       return {
         platform: "macos",
@@ -322,6 +325,7 @@ export function createMockDaemon(): DaemonApi {
     for (const s of t.steps) if (removed.has(s.id)) emit(t, "step_removed", { step_id: s.id, index: s.index, title: s.title }, runId);
     const attempted: string[] = [];
     const completed: string[] = [];
+    const summaries = new Map<string, string>();
     let n = 0;
     let stopped = false;
     for (const s of steps) {
@@ -333,27 +337,46 @@ export function createMockDaemon(): DaemonApi {
       if (!approved.has(s.id)) throw new Error(`UnapprovedStepError: ${s.id}`);
       attempted.push(s.id);
       emit(t, "step_started", { step_id: s.id, index: s.index, title: s.title }, runId);
-      const script = simActions(s);
+      const t0 = Date.now();
+      let stepActions = 0;
       let halted = false;
-      for (const a of script) {
+      for (const a of simActions(s)) {
         await sleep(ACTION_MS);
         if (t.stop) {
           halted = true;
           break;
         }
         n += 1;
+        stepActions += 1;
         emit(t, "action", { step_id: s.id, n, mode: "sim", verb: a[0], target: a[1], detail: a[2], ok: true, error: null }, runId);
         cost(t, "run", 2100, 180, ACTION_MS, runId);
+        t.frameSeq += 1;
+        t.frames.set(t.frameSeq, frameSvg(s.title, a[0], a[1], n));
+        emit(t, "frame", { step_id: s.id, seq: t.frameSeq }, runId);
       }
+      const duration_ms = Date.now() - t0;
       if (halted) {
-        emit(t, "step_result", { step_id: s.id, index: s.index, status: "stopped", summary: "Stopped by the user." }, runId);
+        emit(t, "step_result", { step_id: s.id, index: s.index, status: "stopped", summary: "Stopped by the user.", actions: stepActions, duration_ms }, runId);
         stopped = true;
         break;
       }
       completed.push(s.id);
-      emit(t, "step_result", { step_id: s.id, index: s.index, status: "done", summary: simSummary(s) }, runId);
+      summaries.set(s.id, simSummary(s));
+      emit(t, "step_result", { step_id: s.id, index: s.index, status: "done", summary: summaries.get(s.id)!, actions: stepActions, duration_ms }, runId);
     }
     t.running = false;
+    const skipped = [
+      ...t.steps.filter((s) => removed.has(s.id)).map((s) => ({ step_id: s.id, reason: "You removed this step before the run." })),
+      ...steps.filter((s) => !attempted.includes(s.id)).map((s) => ({ step_id: s.id, reason: "Not run: the run was stopped." })),
+    ];
+    emit(t, "run_recap", {
+      headline: stopped
+        ? `Stopped after ${completed.length} of ${steps.length} approved steps.`
+        : `Done. Completed ${completed.length} of ${steps.length} approved steps.`,
+      done: completed.map((id) => ({ step_id: id, text: summaries.get(id)! })),
+      skipped,
+      source: "fallback",
+    }, runId);
     const final = stopped
       ? { status: "stopped" as const, message: "Run stopped by the user. Remaining approved steps were not attempted.", attempted, completed }
       : { status: "completed" as const, message: "All approved steps were attempted.", attempted, completed };
@@ -422,4 +445,21 @@ function simSummary(s: Step): string {
     default:
       return "Chose Wilson Ultra 100 Junior, $79.99, 4.6 stars.";
   }
+}
+
+const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+/** A small deterministic stand-in for the agent's window capture. */
+function frameSvg(title: string, verb: string, target: string, n: number): string {
+  const svg =
+    `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="400" viewBox="0 0 640 400">` +
+    `<rect width="640" height="400" fill="#101010"/>` +
+    `<rect width="640" height="28" fill="#1d1d1d"/>` +
+    `<circle cx="16" cy="14" r="5" fill="#e46a5c"/><circle cx="32" cy="14" r="5" fill="#e8a948"/><circle cx="48" cy="14" r="5" fill="#5fc48a"/>` +
+    `<text x="68" y="18" fill="#8f8f8f" font-family="sans-serif" font-size="12">agent desk · simulated</text>` +
+    `<text x="24" y="84" fill="#ececec" font-family="sans-serif" font-size="20">${esc(title)}</text>` +
+    `<text x="24" y="118" fill="#8f8f8f" font-family="sans-serif" font-size="14">action ${n}: ${esc(verb)} ${esc(target)}</text>` +
+    `<rect x="24" y="150" width="592" height="220" rx="10" fill="#1b1b1b" stroke="#262626"/>` +
+    `</svg>`;
+  return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
 }
