@@ -4,7 +4,7 @@ import { useEffect, useMemo, useReducer, useRef } from "react";
 import type { DaemonApi } from "../api/client";
 import type { Attachment, DecisionAction, DecisionSource, Point, RunBody } from "../api/types";
 import { classify, indexScores, pairKey, splitPairKey, type Classification, type ScoreIndex } from "../lib/approval";
-import { initialSession, sessionReducer, type SessionState } from "./session";
+import { initialSession, openTaskInto, sessionReducer, stopRun, type SessionState } from "./session";
 
 export interface Counts { approved: number; pending: number; removed: number }
 
@@ -218,13 +218,9 @@ export function useSession(api: DaemonApi | null): Session {
       },
       async stop() {
         const a = apiRef.current;
-        const t = ref.current.taskId;
-        if (!a || !t) return;
-        try {
-          await a.stop(t);
-        } catch (e) {
-          notice(`Stopping failed: ${msg(e)}`);
-        }
+        if (!a) return;
+        // {stopped:false} during a run reloads the task (see stopRun).
+        await stopRun(a, () => ref.current, dispatch);
       },
       newTask() {
         Object.values(putTimers).forEach(clearTimeout);
@@ -233,11 +229,7 @@ export function useSession(api: DaemonApi | null): Session {
       async openTask(taskId) {
         const a = apiRef.current;
         if (!a) return;
-        try {
-          dispatch({ type: "load_task", detail: await a.getTask(taskId) });
-        } catch (e) {
-          notice(`Couldn't open that task: ${msg(e)}`);
-        }
+        await openTaskInto(a, taskId, dispatch);
       },
       dismissNotice() {
         dispatch({ type: "notice", text: null });
