@@ -28,6 +28,12 @@ _CUA_CACHE: dict[str, object] = {"at": 0.0, "value": None}
 _CUA_TTL_S = 8.0
 
 
+def reset_cua_cache() -> None:
+    """Forget the cached cua-driver probe (after start / install / permissions / self-test)."""
+    _CUA_CACHE["at"] = 0.0
+    _CUA_CACHE["value"] = None
+
+
 async def cua_driver_status(force: bool = False) -> tuple[bool, str, str]:
     """(usable, word for the status line, detail).
 
@@ -77,6 +83,7 @@ class Settings:
     model: str = DEFAULT_ANTHROPIC_MODEL
     api_key_present: bool = False
     env_file: str | None = None
+    keychain_warning: str | None = None
     data_dir: Path = field(default_factory=lambda: DAEMON_DIR / ".data")
 
     @property
@@ -99,6 +106,13 @@ def load_settings(fixtures: bool = False, exec_mode: str | None = None,
     env_file = find_env_file()
     if env_file is not None:
         load_dotenv(env_file, override=False)
+
+    # Keys saved by the setup wizard live in the OS keychain and win over env/.env.
+    keychain_warning = None
+    if os.environ.get("OVERSIGHT_NO_KEYCHAIN") != "1":
+        from . import setup as setup_mod
+
+        keychain_warning = setup_mod.apply_keychain(os.environ, setup_mod.keyring_get)
 
     anthropic_key = bool(os.environ.get("ANTHROPIC_API_KEY"))
     openai_key = bool(os.environ.get("OPENAI_API_KEY"))
@@ -126,6 +140,7 @@ def load_settings(fixtures: bool = False, exec_mode: str | None = None,
         model=model,
         api_key_present=key_present,
         env_file=str(env_file) if env_file else None,
+        keychain_warning=keychain_warning,
         data_dir=data_dir,
     )
     return s
