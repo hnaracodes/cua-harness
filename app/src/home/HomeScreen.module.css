@@ -1,0 +1,16 @@
+.home { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; padding: 0 60px 8vh; }
+.title { margin: 0; font-size: var(--fs-xl); font-weight: 500; letter-spacing: -0.01em; }
+.composer { width: 100%; max-width: 680px; }
+.under { width: 100%; max-width: 680px; display: flex; align-items: center; gap: 8px; padding: 0 14px; }
+.chip {
+  display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); border-radius: var(--r-pill);
+  padding: 4px 10px; color: var(--text-2); font-size: var(--fs-xs);
+}
+.chipDot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-3); }
+.sugg { width: 100%; max-width: 680px; display: flex; flex-direction: column; gap: 2px; margin-top: 4px; }
+.item {
+  display: flex; gap: 12px; align-items: center; text-align: left; padding: 10px 14px; border: 0; border-radius: var(--r-md);
+  background: transparent; color: var(--text-2); cursor: pointer; transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+.item:hover { background: var(--surface); color: var(--text); }
+.icon { width: 16px; text-align: center; color: var(--text-3); }

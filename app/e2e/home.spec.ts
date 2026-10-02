@@ -53,3 +53,14 @@ test("removing an attached image removes its chip and the note", async ({ page }
   await expect(page.getByTestId("attachment-chip")).toHaveCount(0);
   await expect(page.getByText("Sent to Anthropic with your task.")).toHaveCount(0);
 });
+
+test("suggestions fill the composer and never send", async ({ page }) => {
+  await home(page);
+  await expect(page.getByTestId("home-suggestion")).toHaveCount(3);
+  await page.getByTestId("home-suggestion").nth(1).click();
+  await expect(page.getByTestId("composer-input")).toHaveValue("Draft a reply to my latest email (don't send it)");
+  await expect(page.getByTestId("composer-input")).toBeFocused();
+  await expect(page.getByRole("heading", { name: "What should the agent do?" })).toBeVisible();
+  await expect(page.getByTestId("boundary-canvas")).toHaveCount(0);
+  await expect(page.getByText("Chrome (agent's own)")).toBeVisible();
+});
