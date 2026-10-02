@@ -1,0 +1,506 @@
+"""FastAPI daemon. Implements the docs/01 sprint contract addendum.
+
+The UI renders and captures gestures; every decision is made here. `POST /run`
+recomputes the approved set itself and hands the executor only approved steps.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+from dataclasses import dataclass, field
+from typing import Any
+
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+from sse_starlette.sse import EventSourceResponse
+
+from . import approval, executor, fixtures
+from .dimensions import DIMENSION_KEYS, load_dimensions
+from .events import EventBus
+from .llm import CallRecord, LLMError, StructuredLLM
+from .planner import plan_task
+from .scorer import SCORER_VERSION, LLMScorer, StepView, content_hash, score_plan
+from .settings import Settings, cua_driver_status
+from .store import Store, new_id
+
+log = logging.getLogger("oversight")
+
+
+def err(status: int, message: str, **extra: Any) -> JSONResponse:
+    return JSONResponse({"error": message, **extra}, status_code=status)
+
+
+# ---------------------------------------------------------------- bodies
+
+
+class TaskBody(BaseModel):
+    prompt: str
+    selected_app: str | None = None
+
+
+class BoundaryBody(BaseModel):
+    x_dim: str
+    y_dim: str
+    polygon: list[list[float]]
+
+
+class DecisionBody(BaseModel):
+    step_id: str
+    action: str
+    source: str = "plan_panel"
+
+
+class RunBody(BaseModel):
+    approved_step_ids: list[str]
+    checked_step_ids: list[str] = []
+    removed_step_ids: list[str] = []
+    boundaries: list[BoundaryBody] | None = None
+
+
+@dataclass
+class ActiveRun:
+    run_id: str
+    stop: asyncio.Event
+    task: asyncio.Task | None = None
+
+
+@dataclass
+class State:
+    settings: Settings
+    store: Store
+    bus: EventBus
+    llm: StructuredLLM | None
+    plan_locks: dict[str, asyncio.Lock] = field(default_factory=dict)
+    active_runs: dict[str, ActiveRun] = field(default_factory=dict)
+    session_cost: float = 0.0
+
+
+def _validate_boundary(b: BoundaryBody) -> str | None:
+    if b.x_dim not in DIMENSION_KEYS or b.y_dim not in DIMENSION_KEYS:
+        return f"unknown dimension in ({b.x_dim}, {b.y_dim})"
+    for p in b.polygon:
+        if len(p) != 2:
+            return "polygon points must be [x, y]"
+    return None
+
+
+def create_app(settings: Settings) -> FastAPI:
+    store = Store(settings.db_path)
+    bus = EventBus(store)
+    llm = None if settings.fixtures else StructuredLLM(settings.provider, settings.model)
+    st = State(settings=settings, store=store, bus=bus, llm=llm)
+
+    app = FastAPI(title="Sketch Oversight daemon")
+    app.state.oversight = st
+    app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"],
+                       allow_headers=["*"], expose_headers=["*"])
+
+    @app.exception_handler(RequestValidationError)
+    async def _validation(_req: Request, exc: RequestValidationError):
+        return err(422, "invalid request body", detail=json.loads(json.dumps(exc.errors(),
+                                                                               default=str)))
+
+    # ------------------------------------------------------------ helpers
+
+    async def record_call(task_id: str | None, run_id: str | None, rec: CallRecord) -> None:
+        store.add_llm_call(task_id, run_id, rec)
+        st.session_cost = round(st.session_cost + rec.usd, 6)
+        if task_id:
+            await bus.emit(task_id, run_id, "cost", {
+                "scope": rec.scope, "model": rec.model, "usd_delta": rec.usd,
+                "usd_total": store.task_cost(task_id), "latency_ms": rec.latency_ms,
+                "input_tokens": rec.input_tokens, "output_tokens": rec.output_tokens,
+            })
+
+    def scores_snapshot(task_id: str, step_id: str) -> dict:
+        """What the step looked like when the user decided: the training signal."""
+        step = next((s for s in store.get_steps(task_id) if s["id"] == step_id), None)
+        scores = [s for s in store.get_scores(task_id) if s["step_id"] == step_id]
+        pos = {s["dimension"]: s["position"] for s in scores}
+        points = {}
+        for b in store.get_boundaries(task_id):
+            if b["x_dim"] in pos and b["y_dim"] in pos:
+                x, y = pos[b["x_dim"]], pos[b["y_dim"]]
+                points[f"{b['x_dim']}|{b['y_dim']}"] = {
+                    "point": [x, y],
+                    "inside": approval.point_in_polygon(x, y, b["polygon"]),
+                }
+        return {"step": step, "scores": scores, "grid_points": points}
+
+    # ------------------------------------------------------------ status
+
+    @app.get("/health")
+    async def health():
+        cua_ok, cua_word = cua_driver_status()
+        model = settings.display_model
+        key_word = "API key found" if settings.api_key_present else "API key missing"
+        if settings.fixtures:
+            status_line = f"Ready. cua-driver {cua_word}, {key_word}, fixtures mode (no API calls)."
+        else:
+            status_line = f"Ready. cua-driver {cua_word}, {key_word}, model {model}."
+        return {
+            "daemon": "ok",
+            "api_key": settings.api_key_present,
+            "provider": settings.display_provider,
+            "model": model,
+            "cua_driver": cua_ok,
+            "fixtures": settings.fixtures,
+            "exec_mode": settings.exec_mode,
+            "cost_usd_total": st.session_cost,
+            "cost_usd_all_time": store.total_cost(),
+            "status_line": status_line,
+        }
+
+    @app.get("/dimensions")
+    async def dimensions():
+        return {"dimensions": [d.to_api() for d in load_dimensions()]}
+
+    @app.get("/boundaries")
+    async def saved_boundaries():
+        return {"boundaries": store.get_boundaries(None)}
+
+    # ------------------------------------------------------------ tasks
+
+    @app.get("/tasks")
+    async def tasks():
+        return {"tasks": [{"id": t["id"], "prompt": t["prompt"], "created_at": t["created_at"],
+                           "step_count": t["step_count"]} for t in store.list_tasks()]}
+
+    @app.post("/task")
+    async def create_task(body: TaskBody):
+        prompt = body.prompt.strip()
+        if not prompt:
+            return err(400, "prompt is empty")
+        tid = store.create_task(prompt, body.selected_app,
+                                "fixtures" if settings.fixtures else "live")
+        return {"task_id": tid}
+
+    @app.get("/task/{task_id}")
+    async def get_task(task_id: str):
+        task = store.get_task(task_id)
+        if task is None:
+            return err(404, "task not found", task_id=task_id)
+        return {
+            "task": task,
+            "steps": store.get_steps(task_id),
+            "scores": store.get_scores(task_id),
+            "boundaries": store.get_boundaries(task_id),
+            "runs": store.get_runs(task_id),
+            "decisions": store.get_decisions(task_id),
+            "llm_calls": store.get_llm_calls(task_id),
+            "cost_usd": store.task_cost(task_id),
+        }
+
+    @app.get("/task/{task_id}/scores")
+    async def get_scores(task_id: str):
+        if store.get_task(task_id) is None:
+            return err(404, "task not found", task_id=task_id)
+        return {"steps": store.get_steps(task_id), "scores": store.get_scores(task_id)}
+
+    # ------------------------------------------------------------ plan + score
+
+    async def progress(task_id: str, stage: str, message: str, done: int, total: int) -> None:
+        await bus.emit(task_id, None, "plan_progress",
+                       {"stage": stage, "message": message, "done": done, "total": total})
+
+    async def plan_fixtures(task_id: str) -> tuple[list[dict], list[dict]]:
+        total = len(fixtures.STEPS)
+        await progress(task_id, "planning", "Generating plan (fixtures).", 0, total)
+        await asyncio.sleep(0.25)
+        await record_call(task_id, None, CallRecord(scope="plan", provider="fixtures",
+                                                    model="fixtures"))
+        steps = [{"id": new_id("stp"), "task_id": task_id, "index": i + 1, "title": t,
+                  "description": d, "glyph": g, "status": "pending", "edited_from": None,
+                  "revision": 0} for i, (t, d, g) in enumerate(fixtures.STEPS)]
+        await progress(task_id, "scoring",
+                       "Preparing oversight view. Scoring actions and placing them on the grid.",
+                       0, total)
+        for i, s in enumerate(steps):
+            await asyncio.sleep(0.1)
+            await record_call(task_id, None, CallRecord(scope="score", provider="fixtures",
+                                                        model="fixtures"))
+            await progress(task_id, "scoring", f"Scored step {s['index']}.", i + 1, total)
+        scores = [sc.to_api() for sc in
+                  fixtures.fixture_scores({s["index"]: s["id"] for s in steps})]
+        return steps, scores
+
+    async def plan_live(task_id: str, prompt: str, selected_app: str | None
+                        ) -> tuple[list[dict], list[dict]]:
+        assert st.llm is not None
+
+        async def on_call(rec: CallRecord) -> None:
+            await record_call(task_id, None, rec)
+
+        await progress(task_id, "planning", "Generating plan.", 0, 0)
+        planned = await plan_task(st.llm, prompt, selected_app, on_call=on_call)
+        steps = [{"id": new_id("stp"), "task_id": task_id, "index": i + 1, "title": p.title,
+                  "description": p.description, "glyph": p.glyph, "status": "pending",
+                  "edited_from": None, "revision": 0} for i, p in enumerate(planned)]
+        total = len(steps)
+        await progress(task_id, "scoring",
+                       "Preparing oversight view. Scoring actions and placing them on the grid.",
+                       0, total)
+        model = f"{settings.model}|scorer-v{SCORER_VERSION}"
+        scorer = LLMScorer(st.llm,
+                           cache_get=lambda h: store.cache_get(h, model),
+                           cache_put=lambda h, v: store.cache_put(h, model, v),
+                           on_call=on_call)
+        views = [StepView(s["id"], s["index"], s["title"], s["description"]) for s in steps]
+        done = 0
+
+        async def on_done(v: StepView) -> None:
+            nonlocal done
+            done += 1
+            await progress(task_id, "scoring", f"Scored step {v.index}.", done, total)
+
+        scores = await score_plan(scorer, prompt, views, on_done=on_done)
+        return steps, [sc.to_api() for sc in scores]
+
+    @app.post("/task/{task_id}/plan")
+    async def plan(task_id: str, force: bool = False):
+        task = store.get_task(task_id)
+        if task is None:
+            return err(404, "task not found", task_id=task_id)
+        lock = st.plan_locks.setdefault(task_id, asyncio.Lock())
+        async with lock:
+            existing = store.get_steps(task_id)
+            if existing and not force:  # replay: a saved plan beats re-generating one
+                return {"task_id": task_id, "steps": existing,
+                        "scores": store.get_scores(task_id)}
+            if task_id in st.active_runs:
+                return err(409, "a run is in progress for this task")
+            try:
+                if settings.fixtures:
+                    steps, scores = await plan_fixtures(task_id)
+                else:
+                    steps, scores = await plan_live(task_id, task["prompt"], task["selected_app"])
+            except LLMError as e:
+                await progress(task_id, "error", str(e), 0, 0)
+                return err(502, f"planning failed: {e}")
+            except Exception as e:  # pragma: no cover
+                log.exception("plan failed")
+                await progress(task_id, "error", f"{type(e).__name__}: {e}", 0, 0)
+                return err(500, f"planning failed: {type(e).__name__}: {e}")
+            store.replace_plan(task_id, steps, scores)
+            await progress(task_id, "done", f"{len(steps)} steps scored on 10 dimensions.",
+                           len(steps), len(steps))
+            return {"task_id": task_id, "steps": store.get_steps(task_id),
+                    "scores": store.get_scores(task_id)}
+
+    # ------------------------------------------------------------ boundary + decisions
+
+    @app.put("/task/{task_id}/boundary")
+    async def put_boundary(task_id: str, body: BoundaryBody):
+        if store.get_task(task_id) is None:
+            return err(404, "task not found", task_id=task_id)
+        problem = _validate_boundary(body)
+        if problem:
+            return err(400, problem)
+        bid = store.put_boundary(task_id, body.x_dim, body.y_dim, body.polygon)
+        inside = approval.inside_step_ids(store.positions_by_step(task_id), body.x_dim,
+                                          body.y_dim, body.polygon) if bid else []
+        return {"boundary_id": bid, "inside_step_ids": inside}
+
+    @app.post("/task/{task_id}/decision")
+    async def decision(task_id: str, body: DecisionBody):
+        if store.get_task(task_id) is None:
+            return err(404, "task not found", task_id=task_id)
+        status_for = {"remove": "removed", "restore": "pending", "check": "approved",
+                      "uncheck": "pending"}
+        if body.action not in status_for:
+            return err(400, f"action must be one of {sorted(status_for)}")
+        if body.step_id not in {s["id"] for s in store.get_steps(task_id)}:
+            return err(404, "step not found in task", step_id=body.step_id)
+        store.add_decision(task_id, body.step_id, body.action, body.source,
+                           scores_snapshot(task_id, body.step_id))
+        store.set_step_status(body.step_id, status_for[body.action])
+        return {"ok": True}
+
+    # ------------------------------------------------------------ run
+
+    @app.post("/task/{task_id}/run")
+    async def run(task_id: str, body: RunBody):
+        task = store.get_task(task_id)
+        if task is None:
+            return err(404, "task not found", task_id=task_id)
+        if task_id in st.active_runs:
+            return err(409, "a run is already in progress for this task",
+                       run_id=st.active_runs[task_id].run_id)
+        steps = store.get_steps(task_id)
+        if not steps:
+            return err(409, "task has no plan yet")
+        ids = {s["id"] for s in steps}
+        unknown = (set(body.checked_step_ids) | set(body.removed_step_ids)
+                   | set(body.approved_step_ids)) - ids
+        if unknown:
+            return err(400, "unknown step ids", unknown=sorted(unknown))
+
+        if body.boundaries is not None:
+            for b in body.boundaries:
+                problem = _validate_boundary(b)
+                if problem:
+                    return err(400, problem)
+            boundaries = [{"x_dim": b.x_dim, "y_dim": b.y_dim, "polygon": b.polygon}
+                          for b in body.boundaries if len(b.polygon) >= 3]
+        else:
+            boundaries = [{"x_dim": b["x_dim"], "y_dim": b["y_dim"], "polygon": b["polygon"]}
+                          for b in store.get_boundaries(task_id)]
+
+        positions = store.positions_by_step(task_id)
+        statuses = approval.classify([s["id"] for s in steps], positions,
+                                     body.checked_step_ids, body.removed_step_ids, boundaries)
+        expected = sorted(approval.approved_set(statuses))
+        got = sorted(set(body.approved_step_ids))
+        pending = sorted(sid for sid, s in statuses.items() if s == "pending")
+        if expected != got or pending:
+            return err(409, "approved set does not match the boundary and checkboxes"
+                       if expected != got else "some steps are still pending",
+                       expected=expected, got=got, pending=pending)
+
+        # Persist the boundary state the approval was computed from.
+        if body.boundaries is not None:
+            keep = {(b["x_dim"], b["y_dim"]) for b in boundaries}
+            for old in store.get_boundaries(task_id):
+                if (old["x_dim"], old["y_dim"]) not in keep:
+                    store.put_boundary(task_id, old["x_dim"], old["y_dim"], [])
+            for b in boundaries:
+                store.put_boundary(task_id, b["x_dim"], b["y_dim"], b["polygon"])
+
+        removed_steps = [s for s in steps if statuses[s["id"]] == "removed"]
+        approved_steps = [s for s in steps if statuses[s["id"]] == "approved"]
+        approved_ids = frozenset(s["id"] for s in approved_steps)
+        run_id = store.create_run(task_id, settings.exec_mode, sorted(approved_ids),
+                                  [s["id"] for s in removed_steps], boundaries)
+
+        checked = set(body.checked_step_ids)
+        for s in steps:
+            snap = scores_snapshot(task_id, s["id"])
+            if statuses[s["id"]] == "removed":
+                store.add_decision(task_id, s["id"], "remove", "run", snap, run_id)
+            else:
+                inside = approval.inside_any(positions.get(s["id"], {}), boundaries)
+                src = ("check+polygon" if inside and s["id"] in checked
+                       else "check" if s["id"] in checked else "polygon")
+                store.add_decision(task_id, s["id"], "approve", src, snap, run_id)
+            store.set_step_status(s["id"], statuses[s["id"]])
+
+        await bus.emit(task_id, run_id, "consideration_scored", {
+            "step_count": len(steps), "dimension_count": len(DIMENSION_KEYS),
+            "approved_count": len(approved_steps)})
+        for s in removed_steps:
+            await bus.emit(task_id, run_id, "step_removed",
+                           {"step_id": s["id"], "index": s["index"], "title": s["title"]})
+
+        exec_steps = [executor.ExecStep(id=s["id"], index=s["index"], title=s["title"],
+                                        description=s["description"]) for s in approved_steps]
+        # Defence in depth: the executor asserts this too.
+        assert all(e.id in approved_ids for e in exec_steps)
+
+        stop = asyncio.Event()
+        active = ActiveRun(run_id=run_id, stop=stop)
+        st.active_runs[task_id] = active
+        config = executor.ExecConfig(
+            mode=settings.exec_mode, provider=settings.provider,
+            model=os.environ.get("OVERSIGHT_EXEC_MODEL") or settings.model)
+        active.task = asyncio.create_task(
+            _drive(task_id, run_id, task["prompt"], exec_steps, approved_ids, stop, config))
+        return {"run_id": run_id}
+
+    async def _drive(task_id: str, run_id: str, prompt: str, exec_steps: list,
+                     approved_ids: frozenset[str], stop: asyncio.Event,
+                     config: Any) -> None:
+        saw_final: dict | None = None
+
+        async def emit(kind: str, payload: dict) -> None:
+            nonlocal saw_final
+            if kind == "cost":
+                rec = CallRecord(
+                    scope=payload.get("scope", "run"), provider=config.provider,
+                    model=str(payload.get("model", config.model)),
+                    input_tokens=int(payload.get("input_tokens", 0) or 0),
+                    output_tokens=int(payload.get("output_tokens", 0) or 0),
+                    usd=float(payload.get("usd_delta", 0.0) or 0.0),
+                    latency_ms=int(payload.get("latency_ms", 0) or 0))
+                store.add_llm_call(task_id, run_id, rec)
+                st.session_cost = round(st.session_cost + rec.usd, 6)
+                payload = {**payload, "scope": rec.scope, "usd_total": store.task_cost(task_id)}
+            if kind == "final_result":
+                saw_final = payload
+            await bus.emit(task_id, run_id, kind, payload)
+
+        try:
+            result = await executor.run_steps(prompt, exec_steps, approved_ids, emit, stop,
+                                              config)
+            if saw_final is None:
+                result = result or {}
+                saw_final = {"status": result.get("status", "completed"),
+                             "message": result.get("message", "All approved steps were attempted."),
+                             "attempted": result.get("attempted", []),
+                             "completed": result.get("completed", [])}
+                await bus.emit(task_id, run_id, "final_result", saw_final)
+        except executor.UnapprovedStepError as e:
+            saw_final = {"status": "failed", "message": f"Refused: {e}", "attempted": [],
+                         "completed": []}
+            await bus.emit(task_id, run_id, "final_result", saw_final)
+        except asyncio.CancelledError:
+            saw_final = {"status": "stopped", "message": "Run cancelled.", "attempted": [],
+                         "completed": []}
+            await bus.emit(task_id, run_id, "final_result", saw_final)
+            raise
+        except Exception as e:
+            log.exception("executor failed")
+            saw_final = {"status": "failed", "message": f"Executor error: {type(e).__name__}: {e}",
+                         "attempted": [], "completed": []}
+            await bus.emit(task_id, run_id, "final_result", saw_final)
+        finally:
+            store.finish_run(run_id, (saw_final or {}).get("status", "failed"), saw_final or {})
+            st.active_runs.pop(task_id, None)
+
+    @app.post("/task/{task_id}/stop")
+    async def stop_run(task_id: str):
+        if store.get_task(task_id) is None:
+            return err(404, "task not found", task_id=task_id)
+        active = st.active_runs.get(task_id)
+        if active is None:
+            return {"stopped": False, "message": "no run in progress"}
+        active.stop.set()
+        return {"stopped": True, "run_id": active.run_id}
+
+    # ------------------------------------------------------------ events (SSE)
+
+    @app.get("/task/{task_id}/events")
+    async def events(task_id: str, request: Request, since: int = 0):
+        if store.get_task(task_id) is None:
+            return err(404, "task not found", task_id=task_id)
+        last_id = request.headers.get("last-event-id")
+        if last_id and last_id.isdigit():
+            since = max(since, int(last_id))
+
+        async def gen():
+            q = bus.subscribe(task_id)
+            try:
+                last = since
+                for ev in store.get_events(task_id, since):
+                    last = ev["seq"]
+                    yield {"event": ev["kind"], "id": str(ev["seq"]), "data": json.dumps(ev)}
+                while True:
+                    ev = await q.get()
+                    if ev["seq"] <= last:
+                        continue
+                    last = ev["seq"]
+                    yield {"event": ev["kind"], "id": str(ev["seq"]), "data": json.dumps(ev)}
+            finally:
+                bus.unsubscribe(task_id, q)
+
+        return EventSourceResponse(gen(), ping=15)
+
+    return app
+
+
+__all__ = ["create_app", "content_hash"]
