@@ -184,3 +184,141 @@ appdev/
   docs/
   reference/
 ```
+
+## Sprint contract addendum (docs/07 scope)
+
+Added for the same-day demo so the daemon, UI and executor workers code
+against identical shapes. Everything above still stands; this only pins down
+payloads the section above left open. Change it only by editing this file and
+telling the other workers.
+
+### Transport
+
+- Daemon listens on `http://127.0.0.1:8765`. CORS allows any origin (Tauri
+  webview and the Vite dev server on `http://localhost:1420`).
+- All bodies are JSON. Errors are `{"error": str, ...}` with a 4xx/5xx status.
+- Dimension keys are snake_case: `authorization_clarity`, `delegated_scope`,
+  `target_correctness`, `reversibility`, `financial_commitment`,
+  `sensitive_information`, `social_reputational_impact`,
+  `environment_criticality`, `action_uncertainty`, `verifiability`.
+
+### Shapes
+
+```jsonc
+// Step
+{"id": "stp_...", "task_id": "tsk_...", "index": 1, "title": str, "description": str,
+ "glyph": "search|compare|cart|message|send|contacts|browse|document|calendar|payment|settings|generic",
+ "status": "pending|approved|removed", "edited_from": null, "revision": 0}
+
+// Score (one per step per dimension, exactly 10 per step)
+{"step_id": str, "dimension": "<key>", "label": str, "position": 0.0..1.0,
+ "confidence": 0.0..1.0, "rationale": str}
+
+// Dimension (from dimensions.yaml, the single source of truth)
+{"key": str, "name": "Authorization clarity", "definition": str,
+ "labels": [str, str, str, str],       // low risk to high risk
+ "anchors": [0.125, 0.375, 0.625, 0.875]}  // centre of each label's band
+```
+
+`position` is always derived from the label: label `i` of `N` owns the band
+`[i/N, (i+1)/N]`, and the scorer's within-label offset places the point inside
+that band. A position can never sit in a different band from its label.
+
+### Endpoints
+
+```
+GET  /health          -> {"daemon": "ok", "api_key": bool, "provider": "anthropic|openai|fixtures",
+                          "model": str, "cua_driver": bool, "fixtures": bool,
+                          "exec_mode": "live|simulated", "cost_usd_total": float,
+                          "status_line": "Ready. cua-driver running, API key found, model <m>."}
+GET  /dimensions      -> {"dimensions": [Dimension x10]}
+GET  /tasks           -> {"tasks": [{"id", "prompt", "created_at", "step_count"}]}   // replay list
+POST /task            body {"prompt": str, "selected_app": str|null} -> {"task_id"}
+GET  /task/{id}       -> {"task", "steps", "scores", "boundaries", "runs"}          // full replay
+POST /task/{id}/plan  -> {"task_id", "steps": [Step], "scores": [Score]}
+                         Blocks until scored. Emits plan_progress + cost on the event stream meanwhile.
+GET  /task/{id}/scores -> {"steps", "scores"}
+PUT  /task/{id}/boundary body {"x_dim", "y_dim", "polygon": [[x,y],...]} -> {"boundary_id", "inside_step_ids"}
+POST /task/{id}/decision body {"step_id", "action": "remove|restore|check|uncheck", "source": "plan_panel|grid"}
+                         -> {"ok": true}. Recorded with a snapshot of the step's scores (training signal).
+POST /task/{id}/run   body {"approved_step_ids": [], "checked_step_ids": [], "removed_step_ids": [],
+                            "boundaries": [{"x_dim", "y_dim", "polygon"}]}
+                         -> {"run_id"} or 409 {"error", "expected": [], "got": []}
+POST /task/{id}/stop  -> {"stopped": true}
+GET  /task/{id}/events?since=<seq>   SSE. Replays stored events after `since`, then streams live.
+```
+
+### Approval rule (identical in UI and daemon)
+
+- A step is `removed` if removed. Otherwise it is `approved` if it is checked
+  OR its point lies inside ANY stored polygon for any axis pair. Otherwise it
+  is `pending`. One polygon per axis pair; switching axes does not reset
+  approvals; Clear deletes only the polygon of the current axis pair.
+- The point for axis pair (x, y) is the RAW `(score[x].position,
+  score[y].position)`. Display jitter (deterministic by step id, at most 0.012
+  normalized) is cosmetic and never used for classification.
+- Inside test is the even-odd ray cast, written the same way in TS and Python:
+  for each edge (i, j=i-1): `if ((yi > y) != (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi): inside = !inside`.
+- `POST /run` recomputes the approved set from the stored scores and the body's
+  checked, removed and boundaries. If it differs from `approved_step_ids`, or
+  any non-removed step is still pending, it returns 409 and nothing runs.
+
+### SSE events
+
+Every message: `event: <kind>` and `data: {"kind", "task_id", "run_id": str|null,
+"seq": int, "ts": iso8601, "payload": {...}}`. All events are persisted.
+
+| kind | payload |
+|---|---|
+| `plan_progress` | `{"stage": "planning|scoring|done|error", "message": str, "done": int, "total": int}` |
+| `cost` | `{"scope": "plan|score|run", "model": str, "usd_delta": float, "usd_total": float, "latency_ms": int, "input_tokens": int, "output_tokens": int}` |
+| `consideration_scored` | `{"step_count": int, "dimension_count": 10, "approved_count": int}` (first event of a run) |
+| `step_removed` | `{"step_id", "index", "title"}` (one per removed step, at run start) |
+| `step_started` | `{"step_id", "index", "title"}` |
+| `action` | `{"step_id", "n": int, "mode": "ax|pixel|sim", "verb": str, "target": str, "detail": str, "ok": bool, "error": str|null}` |
+| `step_result` | `{"step_id", "index", "status": "done|failed|stopped|skipped", "summary": str}` |
+| `final_result` | `{"status": "completed|stopped|failed|capped", "message": str, "attempted": [ids], "completed": [ids]}` |
+| `boundary_candidate` | reserved, cut for the sprint |
+
+`final_result.message` is "All approved steps were attempted." when every
+approved step was attempted.
+
+### Executor interface (`daemon/oversight/executor.py`)
+
+```python
+@dataclass(frozen=True)
+class ExecStep:
+    id: str; index: int; title: str; description: str
+
+class UnapprovedStepError(AssertionError): ...
+
+@dataclass
+class ExecConfig:
+    mode: Literal["live", "simulated"] = "live"
+    max_actions_per_run: int = 25
+    max_actions_per_step: int = 10
+    screenshot_history: int = 3          # prune older screenshots from model context
+    window_scoped_screenshots: bool = True   # never full screen (flag for testing/)
+    own_browser_profile: bool = True         # Chrome --user-data-dir (flag for testing/)
+    ax_first: bool = True                    # accessibility tree before pixels (flag)
+    chrome_profile_dir: str = "<appdev>/.agent-desk/chrome-profile"
+    provider: str = "anthropic"; model: str = "<from settings>"
+
+async def run_steps(task_prompt: str, steps: list[ExecStep], approved_ids: frozenset[str],
+                    emit: Callable[[str, dict], Awaitable[None]], stop: asyncio.Event,
+                    config: ExecConfig) -> dict: ...
+```
+
+`run_steps` raises `UnapprovedStepError` if any step id is not in
+`approved_ids`, checked on entry and again immediately before each step
+dispatches. The daemon passes only the approved steps. `emit(kind, payload)`
+uses the SSE kinds above. `mode="simulated"` emits plausible `action` events
+with `mode: "sim"` and never touches the desktop.
+
+### Daemon modes
+
+- `uv run oversight-daemon` : real planner and scorer, live executor.
+- `uv run oversight-daemon --fixtures` : docs/00 tennis-racket plan and fixed
+  scores, no API calls, simulated executor (add `--exec live` to override).
+- Keys load from the first `.env` found walking up from `daemon/`, also
+  checking `testing/.env` at each level.
