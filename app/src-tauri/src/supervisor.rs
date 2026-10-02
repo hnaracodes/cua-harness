@@ -10,7 +10,7 @@ pub const LOG_CAPACITY: usize = 400;
 pub const BACKOFF_SECS: [u64; 3] = [1, 2, 4];
 /// First launch may run `uv sync`; give the daemon a minute to answer /health.
 pub const READY_TIMEOUT: Duration = Duration::from_secs(60);
-/// A child that stayed up this long was healthy; its exit starts a fresh streak.
+/// A child that answered /health for this long was stable; its exit starts a fresh streak.
 pub const STABLE_AFTER: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -66,8 +66,10 @@ pub struct Policy {
 }
 
 impl Policy {
-    pub fn on_exit(&mut self, ran_for: Duration) -> Next {
-        if ran_for >= STABLE_AFTER {
+    /// `healthy_for` is time since the child first answered /health (zero if it never
+    /// did), not time since spawn: a child that never became healthy is always a failure.
+    pub fn on_exit(&mut self, healthy_for: Duration) -> Next {
+        if healthy_for >= STABLE_AFTER {
             self.consecutive_failures = 0;
         }
         self.consecutive_failures += 1;
@@ -148,10 +150,15 @@ pub struct Supervisor {
 impl Supervisor {
     pub fn start() -> Self {
         let (cmd, cwd) = daemon_command();
-        Self::start_with(cmd, cwd)
+        Self::start_with(cmd, cwd, HEALTH_ADDR)
     }
 
-    pub fn start_with(cmd: (String, Vec<String>), cwd: PathBuf) -> Self {
+    pub fn start_with(cmd: (String, Vec<String>), cwd: PathBuf, health_addr: &'static str) -> Self {
+        Self::start_configured(cmd, cwd, health_addr, READY_TIMEOUT)
+    }
+
+    fn start_configured(cmd: (String, Vec<String>), cwd: PathBuf, health_addr: &'static str,
+                        ready_timeout: Duration) -> Self {
         let inner = Arc::new(Mutex::new(Inner {
             status: SupervisorStatus { state: DaemonState::Starting, restarts: 0, last_error: None },
             log: LogRing::new(LOG_CAPACITY),
@@ -159,7 +166,7 @@ impl Supervisor {
             stopping: false,
         }));
         let me = Self { inner: inner.clone() };
-        thread::spawn(move || run_loop(inner, cmd, cwd));
+        thread::spawn(move || run_loop(inner, cmd, cwd, health_addr, ready_timeout));
         me
     }
 
@@ -188,7 +195,9 @@ fn note(inner: &Arc<Mutex<Inner>>, line: impl Into<String>) {
 fn set_state(inner: &Arc<Mutex<Inner>>, state: DaemonState, err: Option<String>) {
     let mut g = inner.lock().unwrap();
     g.status.state = state;
-    if err.is_some() {
+    if state == DaemonState::Running {
+        g.status.last_error = None; // a recovered daemon must not report a stale error
+    } else if err.is_some() {
         g.status.last_error = err;
     }
 }
@@ -222,8 +231,17 @@ fn spawn_child(inner: &Arc<Mutex<Inner>>, cmd: &(String, Vec<String>), cwd: &Pat
     if let Some(e) = child.stderr.take() {
         pump(inner.clone(), e, "err");
     }
-    note(inner, format!("spawned `{} {}` (pid {}) in {}", cmd.0, cmd.1.join(" "), child.id(), cwd.display()));
-    inner.lock().unwrap().child = Some(child);
+    let line = format!("spawned `{} {}` (pid {}) in {}", cmd.0, cmd.1.join(" "), child.id(), cwd.display());
+    let mut g = inner.lock().unwrap();
+    g.log.push(line);
+    if g.stopping {
+        // shutdown() ran between spawn() and here and found no child to stop: stop it now,
+        // under the same lock shutdown() takes, so it cannot be orphaned.
+        drop(g);
+        terminate(&mut child);
+        return Ok(());
+    }
+    g.child = Some(child);
     Ok(())
 }
 
@@ -239,22 +257,40 @@ fn terminate(child: &mut Child) {
             thread::sleep(Duration::from_millis(100));
         }
     }
+    #[cfg(windows)]
+    {
+        // child.kill() would stop `uv` but orphan the python it started; kill the tree.
+        // TODO(packaging): put the sidecar in a Job object (kill-on-close) instead.
+        let _ = Command::new("taskkill").args(["/T", "/F", "/PID", &child.id().to_string()]).status();
+    }
     let _ = child.kill();
     let _ = child.wait();
 }
 
-fn run_loop(inner: Arc<Mutex<Inner>>, cmd: (String, Vec<String>), cwd: PathBuf) {
-    if health_ok(HEALTH_ADDR, Duration::from_millis(500)) {
-        note(&inner, "a daemon already answers on 127.0.0.1:8765; using it, not spawning one");
+/// Take any stored child and stop it (used when quitting races a spawn).
+fn take_and_terminate(inner: &Arc<Mutex<Inner>>) {
+    let child = inner.lock().unwrap().child.take();
+    if let Some(mut c) = child {
+        terminate(&mut c);
+    }
+}
+
+fn run_loop(inner: Arc<Mutex<Inner>>, cmd: (String, Vec<String>), cwd: PathBuf,
+            health_addr: &'static str, ready_timeout: Duration) {
+    if health_ok(health_addr, Duration::from_millis(500)) {
+        note(&inner, format!("a daemon already answers on {health_addr}; using it, not spawning one"));
         set_state(&inner, DaemonState::External, None);
         return;
     }
     let mut policy = Policy::default();
     loop {
         if inner.lock().unwrap().stopping {
+            take_and_terminate(&inner);
             return;
         }
         let started = Instant::now();
+        // When this spawn first answered /health; restart policy counts healthy time only.
+        let mut healthy_at: Option<Instant> = None;
         if let Err(e) = spawn_child(&inner, &cmd, &cwd) {
             note(&inner, format!("spawn failed: {e}"));
             inner.lock().unwrap().status.last_error = Some(format!("spawn failed: {e}"));
@@ -264,6 +300,8 @@ fn run_loop(inner: Arc<Mutex<Inner>>, cmd: (String, Vec<String>), cwd: PathBuf) 
                 thread::sleep(Duration::from_millis(250));
                 let mut g = inner.lock().unwrap();
                 if g.stopping {
+                    drop(g);
+                    take_and_terminate(&inner);
                     return;
                 }
                 let exited = match g.child.as_mut() {
@@ -280,27 +318,26 @@ fn run_loop(inner: Arc<Mutex<Inner>>, cmd: (String, Vec<String>), cwd: PathBuf) 
                     g.status.last_error = Some(why);
                     break;
                 }
-                let state = g.status.state;
                 drop(g);
-                if state != DaemonState::Running {
-                    if health_ok(HEALTH_ADDR, Duration::from_millis(400)) {
+                if healthy_at.is_none() {
+                    if health_ok(health_addr, Duration::from_millis(400)) {
+                        healthy_at = Some(Instant::now());
                         note(&inner, "daemon healthy");
                         set_state(&inner, DaemonState::Running, None);
-                    } else if started.elapsed() > READY_TIMEOUT {
-                        note(&inner, "daemon not healthy after 60 s; restarting it");
-                        // Take the child in its own statement so the lock is released before
-                        // terminate() (which can wait up to 3 s) and before we lock again.
-                        let child = inner.lock().unwrap().child.take();
-                        if let Some(mut c) = child {
-                            terminate(&mut c);
-                        }
-                        inner.lock().unwrap().status.last_error = Some("not healthy within 60 s".into());
-                        break;
+                    } else if started.elapsed() > ready_timeout {
+                        // Diagram: "not healthy in 60 s → failed". Restarting would only
+                        // repeat the same wait (for example a slow, broken `uv sync`).
+                        let secs = ready_timeout.as_secs();
+                        note(&inner, format!("daemon not healthy after {secs} s; giving up"));
+                        take_and_terminate(&inner);
+                        set_state(&inner, DaemonState::Failed, Some(format!(
+                            "The daemon won't start (last: not healthy within {secs} s). See the log.")));
+                        return;
                     }
                 }
             }
         }
-        match policy.on_exit(started.elapsed()) {
+        match policy.on_exit(healthy_at.map(|t| t.elapsed()).unwrap_or(Duration::ZERO)) {
             Next::RestartAfter(d) => {
                 {
                     let mut g = inner.lock().unwrap();
@@ -309,6 +346,8 @@ fn run_loop(inner: Arc<Mutex<Inner>>, cmd: (String, Vec<String>), cwd: PathBuf) 
                 }
                 note(&inner, format!("restarting in {} s", d.as_secs()));
                 thread::sleep(d);
+                // restarting → backoff → spawn → starting
+                inner.lock().unwrap().status.state = DaemonState::Starting;
             }
             Next::GiveUp => {
                 let last = inner.lock().unwrap().status.last_error.clone().unwrap_or_default();
@@ -356,6 +395,32 @@ mod tests {
     }
 
     #[test]
+    fn policy_gives_up_when_the_child_never_became_healthy() {
+        // A child that never answered /health counts as zero healthy time, however
+        // long it ran, so the streak never resets and the policy ends in GiveUp.
+        let mut p = Policy::default();
+        assert_eq!(p.on_exit(Duration::ZERO), Next::RestartAfter(Duration::from_secs(1)));
+        assert_eq!(p.on_exit(Duration::ZERO), Next::RestartAfter(Duration::from_secs(2)));
+        assert_eq!(p.on_exit(Duration::ZERO), Next::RestartAfter(Duration::from_secs(4)));
+        assert_eq!(p.on_exit(Duration::ZERO), Next::GiveUp);
+    }
+
+    #[test]
+    fn running_clears_a_stale_error() {
+        let inner = Arc::new(Mutex::new(Inner {
+            status: SupervisorStatus { state: DaemonState::Restarting, restarts: 1,
+                                       last_error: Some("daemon exited (signal: 15)".into()) },
+            log: LogRing::new(4),
+            child: None,
+            stopping: false,
+        }));
+        set_state(&inner, DaemonState::Running, None);
+        let st = inner.lock().unwrap().status.clone();
+        assert_eq!(st.state, DaemonState::Running);
+        assert_eq!(st.last_error, None);
+    }
+
+    #[test]
     fn http_ok_only_for_200() {
         assert!(is_http_ok(b"HTTP/1.1 200 OK\r\ncontent-type: application/json"));
         assert!(is_http_ok(b"HTTP/1.0 200 OK"));
@@ -393,11 +458,10 @@ mod tests {
     #[test]
     fn supervisor_gives_up_on_a_command_that_always_exits() {
         // `false` exits immediately: three backoff restarts (1+2+4 s), then failed.
-        // Only meaningful when nothing listens on :8765 (otherwise state is external).
-        if health_ok(HEALTH_ADDR, Duration::from_millis(300)) {
-            return;
-        }
-        let sup = Supervisor::start_with(("false".into(), vec![]), std::env::temp_dir());
+        // Uses an unused port so a live daemon on :8765 cannot turn this into `external`.
+        let addr = "127.0.0.1:59871";
+        assert!(!health_ok(addr, Duration::from_millis(300)), "{addr} must be free");
+        let sup = Supervisor::start_with(("false".into(), vec![]), std::env::temp_dir(), addr);
         let deadline = std::time::Instant::now() + Duration::from_secs(20);
         while sup.status().state != DaemonState::Failed && std::time::Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(100));
@@ -407,5 +471,24 @@ mod tests {
         assert_eq!(s.restarts, 3);
         assert!(s.last_error.unwrap_or_default().contains("won't start"));
         assert!(sup.log_tail(50).contains("exited"));
+    }
+
+    #[test]
+    fn supervisor_fails_when_the_daemon_never_becomes_healthy() {
+        // `sleep 1000` never answers /health: after the ready timeout it is killed and the
+        // state is failed (not restarted forever).
+        let addr = "127.0.0.1:59872";
+        assert!(!health_ok(addr, Duration::from_millis(300)), "{addr} must be free");
+        let sup = Supervisor::start_configured(("sleep".into(), vec!["1000".into()]),
+                                               std::env::temp_dir(), addr, Duration::from_secs(2));
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        while sup.status().state != DaemonState::Failed && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let s = sup.status();
+        assert_eq!(s.state, DaemonState::Failed);
+        assert_eq!(s.restarts, 0);
+        assert!(s.last_error.unwrap_or_default().contains("won't start"));
+        assert!(sup.inner.lock().unwrap().child.is_none(), "timed-out child must be terminated");
     }
 }
