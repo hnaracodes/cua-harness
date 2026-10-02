@@ -160,6 +160,26 @@ test("space-drag state also clears when the page is hidden", async ({ page }) =>
   await expect(svg).not.toHaveCSS("cursor", "grab");
 });
 
+test("a keyboard zoom made mid-pan is kept by the rest of the pan", async ({ page }) => {
+  await openReview(page);
+  const svg = page.getByTestId("boundary-canvas");
+  await svg.focus();
+  await page.keyboard.press("h"); // pan tool
+  const box = (await svg.boundingBox())!;
+  const x = box.x + box.width / 2, y = box.y + box.height / 2;
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x + 20, y + 10, { steps: 4 });
+  await page.keyboard.press("+");
+  await expect(svg).toHaveAttribute("data-scale", "1.4142");
+  const tx = Number(await svg.getAttribute("data-tx"));
+  await page.mouse.move(x + 30, y + 10, { steps: 2 });
+  await expect(svg).toHaveAttribute("data-scale", "1.4142");
+  expect(Number(await svg.getAttribute("data-tx"))).toBeCloseTo(tx + 10, 0);
+  await page.mouse.up();
+  await expect(svg).toHaveAttribute("data-scale", "1.4142");
+});
+
 test("feel: pointermove → next frame under 16 ms (median) during a handle drag", async ({ page }) => {
   await openReview(page);
   const pl = await plotBox(page);
