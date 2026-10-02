@@ -1,0 +1,55 @@
+import { expect, test, type Page } from "@playwright/test";
+
+// 1x1 transparent PNG.
+const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", "base64");
+const png = (name: string) => ({ name, mimeType: "image/png", buffer: PNG });
+
+async function home(page: Page, query = "?mock") {
+  await page.goto(`/${query}`);
+  await expect(page.getByRole("heading", { name: "What should the agent do?" })).toBeVisible();
+}
+
+test("Enter sends, Shift+Enter makes a newline", async ({ page }) => {
+  await home(page);
+  const input = page.getByTestId("composer-input");
+  await input.click();
+  await page.keyboard.type("line one");
+  await page.keyboard.press("Shift+Enter");
+  await page.keyboard.type("line two");
+  await expect(input).toHaveValue("line one\nline two");
+  await expect(page.getByTestId("composer-send")).toBeEnabled();
+});
+
+test("rejects bad attachments on their own chip; a good image still sends", async ({ page }) => {
+  await home(page);
+  await page.getByTestId("composer-file").setInputFiles([
+    { name: "notes.txt", mimeType: "text/plain", buffer: Buffer.from("hello") },
+    { name: "huge.png", mimeType: "image/png", buffer: Buffer.alloc(6 * 1024 * 1024, 1) },
+  ]);
+  await expect(page.getByTestId("attachment-error")).toHaveCount(2);
+  await expect(page.getByTestId("attachment-error").first()).toContainText("Unsupported type text/plain");
+  await expect(page.getByTestId("attachment-error").nth(1)).toContainText("5 MB or smaller");
+  await page.getByTestId("composer-file").setInputFiles([png("ok.png")]);
+  await expect(page.getByTestId("attachment-chip")).toHaveCount(3);
+  await expect(page.getByText("Sent to Anthropic with your task.")).toBeVisible();
+  await page.getByTestId("composer-input").fill("Fill this form using the screenshot I attach");
+  await page.getByTestId("composer-send").click();
+  await expect(page.getByTestId("boundary-canvas")).toBeVisible({ timeout: 20_000 });
+});
+
+test("a fifth image is rejected", async ({ page }) => {
+  await home(page);
+  await page.getByTestId("composer-file").setInputFiles([png("1.png"), png("2.png"), png("3.png"), png("4.png"), png("5.png")]);
+  await expect(page.getByTestId("attachment-error")).toHaveCount(1);
+  await expect(page.getByTestId("attachment-error")).toContainText("At most 4 images per task.");
+  await expect(page.getByTestId("attachment-chip")).toHaveCount(5);
+});
+
+test("removing an attached image removes its chip and the note", async ({ page }) => {
+  await home(page);
+  await page.getByTestId("composer-file").setInputFiles([png("a.png")]);
+  await expect(page.getByTestId("attachment-chip")).toHaveCount(1);
+  await page.getByRole("button", { name: "Remove image" }).click();
+  await expect(page.getByTestId("attachment-chip")).toHaveCount(0);
+  await expect(page.getByText("Sent to Anthropic with your task.")).toHaveCount(0);
+});
