@@ -425,3 +425,35 @@ def test_review_focus_non_macos_and_no_keychain(client):
     assert client.post("/setup/permissions/open", json={"which": "accessibility"}).json() == {"ok": False}
     r = client.put("/setup/key", json={"provider": "anthropic", "key": "sk-new"}).json()
     assert r == {"ok": True, "error": None} and env.environ["ANTHROPIC_API_KEY"] == "sk-new"
+
+
+def test_put_key_for_other_provider_makes_it_active(tmp_path):
+    """Fresh machine: the daemon defaults to openai (no keys). Saving a tested Anthropic
+    key must make Anthropic the active provider, or the wizard stays stuck on openai."""
+    s = Settings(fixtures=False, exec_mode="simulated", provider="openai", model="gpt-5.5",
+                 data_dir=tmp_path)
+    with TestClient(create_app(s)) as c:
+        env, _ = make_env()
+        st = _use(c, env)
+        r = c.put("/setup/key", json={"provider": "anthropic", "key": "sk-ant-good"})
+        assert r.json() == {"ok": True, "error": None}
+        got = c.get("/setup/status").json()
+        assert got["key"]["provider"] == "anthropic"
+        assert got["key"]["present"] is True and got["key"]["tested"] is True
+        assert (s.provider, s.model) == ("anthropic", setup.MODELS["anthropic"][0])
+        assert s.api_key_present is True
+        assert st.store.get_setting("provider") == "anthropic"
+        assert st.store.get_setting("model") == setup.MODELS["anthropic"][0]
+        assert st.llm.provider == "anthropic" and st.llm.model == setup.MODELS["anthropic"][0]
+        assert c.get("/settings").json()["provider"] == "anthropic"
+
+
+def test_put_key_switch_reuses_stored_model_for_that_provider(tmp_path):
+    s = Settings(fixtures=False, exec_mode="simulated", provider="openai", model="gpt-5.5",
+                 data_dir=tmp_path)
+    with TestClient(create_app(s)) as c:
+        env, _ = make_env()
+        st = _use(c, env)
+        st.store.set_setting("model", "claude-opus-5-5")  # chosen earlier for anthropic
+        assert c.put("/setup/key", json={"provider": "anthropic", "key": "k"}).json()["ok"]
+        assert s.model == "claude-opus-5-5"
