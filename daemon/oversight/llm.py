@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -58,6 +59,14 @@ class CallRecord:
     error: str | None = None
 
 
+@dataclass(frozen=True)
+class ImageInput:
+    """One user-attached image for a structured call (track D2 builds the blocks)."""
+
+    mime: str  # image/png | image/jpeg | image/webp
+    data: bytes
+
+
 class LLMError(RuntimeError):
     def __init__(self, message: str, record: CallRecord | None = None):
         super().__init__(message)
@@ -89,7 +98,11 @@ class StructuredLLM:
 
     async def call(self, *, scope: str, system: str, user: str, schema: dict,
                    schema_name: str, effort: str = "low",
-                   max_tokens: int = 8000) -> tuple[dict, CallRecord]:
+                   max_tokens: int = 8000,
+                   images: Sequence[ImageInput] = ()) -> tuple[dict, CallRecord]:
+        if images:
+            # Wave 0 gate. Track D2 replaces this with Anthropic/OpenAI image blocks.
+            raise LLMError("image input not implemented")
         rec = CallRecord(scope=scope, provider=self.provider, model=self.model)
         t0 = time.perf_counter()
         try:
