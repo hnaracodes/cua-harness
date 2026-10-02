@@ -26,7 +26,7 @@ DENIED_BUNDLES = frozenset({
 #: Substrings that deny a bundle id: this app (any build of it).
 DENIED_SUBSTRINGS = ("agent-oversight", "edu.cmu.sketch-oversight")
 
-CATALOG_MAX = 80
+CATALOG_MAX = 150
 CATALOG_TTL_S = 600.0
 
 _cache: tuple[float, list[dict]] | None = None
@@ -44,7 +44,9 @@ def is_denied(bundle_id: str | None) -> bool:
 
 def build_catalog(raw: Any) -> list[dict]:
     """``list_apps`` output to ``[{"name", "bundle_id"}]``: denied apps removed,
-    deduplicated by bundle id, sorted by name, capped at ``CATALOG_MAX``."""
+    deduplicated by bundle id, capped at ``CATALOG_MAX`` and sorted by name.
+    Over the cap, running apps and then the most recently used survive, so a
+    late-alphabet app the user actually uses (WhatsApp, Zoom) is never dropped."""
     items = raw.get("apps") if isinstance(raw, dict) else raw
     if not isinstance(items, list):
         return []
@@ -56,8 +58,14 @@ def build_catalog(raw: Any) -> list[dict]:
         bundle = str(a.get("bundle_id") or a.get("bundleId") or "").strip()
         if not name or not bundle or is_denied(bundle) or bundle in seen:
             continue
-        seen[bundle] = {"name": name, "bundle_id": bundle}
-    return sorted(seen.values(), key=lambda a: (a["name"].lower(), a["bundle_id"]))[:CATALOG_MAX]
+        seen[bundle] = {"name": name, "bundle_id": bundle,
+                        "_rank": (0 if a.get("running") else 1, str(a.get("last_used") or ""))}
+    # running first, then newest last_used (RFC3339 sorts lexically), then name
+    ranked = sorted(seen.values(), key=lambda a: a["name"].lower())
+    ranked = sorted(ranked, key=lambda a: a["_rank"][1], reverse=True)
+    ranked = sorted(ranked, key=lambda a: a["_rank"][0])[:CATALOG_MAX]
+    return sorted(({"name": a["name"], "bundle_id": a["bundle_id"]} for a in ranked),
+                  key=lambda a: (a["name"].lower(), a["bundle_id"]))
 
 
 async def app_catalog(driver: Any = None) -> list[dict]:

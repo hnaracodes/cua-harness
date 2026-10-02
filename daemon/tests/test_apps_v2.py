@@ -51,7 +51,7 @@ def test_build_catalog_filters_sorts_dedupes_and_caps() -> None:
     assert apps.build_catalog(RAW) == [MESSAGES, NOTES]
     many = {"apps": [{"name": f"App {i:03}", "bundle_id": f"b.{i}"} for i in range(120, 0, -1)]}
     cat = apps.build_catalog(many)
-    assert len(cat) == 80 and cat[0]["name"] == "App 001"
+    assert len(cat) == min(120, apps.CATALOG_MAX) and cat[0]["name"] == "App 001"
     assert apps.build_catalog({"text": "nope"}) == []
 
 
@@ -277,3 +277,16 @@ def test_live_routes_by_step_app_then_falls_back_to_regex(monkeypatch) -> None:
     built.clear()
     go(ExecStep(id="b", index=1, title="Open Messages", description="Find Amogh."))
     assert built == [("com.apple.MobileSMS", "Messages")]
+
+
+def test_build_catalog_keeps_running_and_recent_apps_when_over_the_cap() -> None:
+    # Over the cap, alphabetical-only truncation dropped WhatsApp/Zoom on a real Mac.
+    filler = [{"name": f"A{i:03d}", "bundle_id": f"com.a.{i}", "running": False,
+               "last_used": "2020-01-01T00:00:00Z"} for i in range(apps.CATALOG_MAX + 20)]
+    late = [{"name": "WhatsApp", "bundle_id": "net.whatsapp.WhatsApp", "running": True},
+            {"name": "Zoom", "bundle_id": "us.zoom.xos", "running": False,
+             "last_used": "2026-10-01T00:00:00Z"}]
+    names = [a["name"] for a in apps.build_catalog(filler + late)]
+    assert len(names) == apps.CATALOG_MAX
+    assert "WhatsApp" in names and "Zoom" in names
+    assert names == sorted(names, key=str.lower)  # still presented alphabetically
