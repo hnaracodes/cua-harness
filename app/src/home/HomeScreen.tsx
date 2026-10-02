@@ -60,7 +60,7 @@ export function HomeScreen({ api, conn, session }: ScreenProps) {
         />
       </div>
       <div className={s.under}>
-        <span className={s.chip} title="The agent works in its own browser profile, never in your windows">
+        <span className={s.chip} title="Web steps use the agent's own browser profile. Steps that name Messages or Notes use those apps on your Mac.">
           <i className={s.chipDot} /> Chrome (agent's own)
         </span>
       </div>

@@ -53,9 +53,13 @@ the boundary polygon and the explicit checkboxes, and the executor takes that
 set as its only input. There must be no code path where an unapproved step can
 run. Write this as an assertion in the executor, not a convention.
 
-**The agent only sees its own desk.** Screenshots are of the target window
-(or the agent's virtual display), never the full screen, and the agent uses
-its own browser profile. Old screenshots are pruned from history. These are
+**The agent only sees the window it is working in.** Screenshots are of the target window
+(or the agent's virtual display), never the full screen, and web steps use the agent's
+own browser profile. Exception, on by default since 2026-10-02 (user decision): steps
+that name Messages or Notes run in the user's own native app through cua-driver
+(`ExecConfig.route_apps`, `host_desk.AppDesk`), still window-scoped and still approved-only.
+The executor prompt also treats grid approval as satisfying "after your approval" in a
+step. `testing/` should treat both as experimental conditions (`route_apps` is a flag). Old screenshots are pruned from history. These are
 the fixes for what `testing/` measured; build them as flags so `testing/` can
 toggle them as experimental conditions. See `docs/06-peripheral-integration.md`.
 

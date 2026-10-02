@@ -40,6 +40,7 @@ specific problems:
 | Layout | **Chat left, workspace right** (like Claude's artifact panel). Collapsible left rail of past tasks. |
 | Ties on the canvas | **Stack and fan out.** Overlapping badges merge into one "×N" badge; a click fans them out with leader lines to the true point. |
 | Setup scope | **The app starts its own daemon, plus an in-app wizard.** Installers, signing and the PyInstaller sidecar are the next sub-project. |
+| Native apps | **On by default** (decided 2026-10-02, after review): Messages/Notes steps use the user's own app; grid approval satisfies "after your approval". Wizard and home copy describe this instead of promising "never in your windows". |
 
 ## What does not change
 
@@ -56,8 +57,10 @@ specific problems:
   to the scorer's prompt.
 - The daemon owns all logic. The executor receives only the approved set and
   asserts it. Every removal and edit is recorded as a decision.
-- Agent desk rules: window-scoped screenshots only, its own browser profile,
-  history pruning.
+- Agent desk rules: window-scoped screenshots only, history pruning. Web steps
+  use the agent's own browser profile. Amended 2026-10-02 (user decision): steps
+  that name Messages or Notes run in the user's native app (`route_apps`, on by
+  default), still window-scoped and approved-only. The UI copy says so.
 
 ## Screens
 

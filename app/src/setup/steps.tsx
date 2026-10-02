@@ -12,7 +12,7 @@ export function Welcome() {
       <h2 className={s.h}>Welcome to Sketch Oversight</h2>
       <p className={s.p}>The agent plans a task, you draw a loop around the steps you're OK with, and only those run.</p>
       <ul className={s.list}>
-        <li>It works in its own browser window on its own desk, never in your windows.</li>
+        <li>Web steps run in the agent's own browser window. Steps that name Messages or Notes run in those apps on your Mac, and only once you've approved them.</li>
         <li>Nothing runs until you approve it.</li>
         <li>Stop any time with the Stop button; the run halts before its next action.</li>
       </ul>
@@ -112,7 +112,7 @@ export function DriverStep({ api, status, refresh }: StepProps) {
 
 const PERMS: { which: "accessibility" | "screen_recording"; name: string; why: string; icon: string }[] = [
   { which: "accessibility", name: "Accessibility", why: "Lets the agent click and type in its own window", icon: "♿" },
-  { which: "screen_recording", name: "Screen Recording", why: "Lets the agent see its own window (never your other windows)", icon: "▣" },
+  { which: "screen_recording", name: "Screen Recording", why: "Lets the agent see the window it is working in: its own browser, or Messages/Notes for steps that name them", icon: "▣" },
 ];
 
 export function PermissionsStep({ api, status }: StepProps) {
