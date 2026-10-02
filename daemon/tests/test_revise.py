@@ -8,6 +8,7 @@ from oversight.replanner import (
     RevisedStep,
     fixture_replan,
     merge_revision,
+    render_current,
     replan,
     validate_revision,
 )
@@ -249,7 +250,7 @@ def test_repropose_live_path_uses_replan_with_images(client, monkeypatch):
     tid, steps, _ = _plan(client)
     seen = {}
 
-    async def fake_replan(llm, prompt, current, instruction, images=(), on_call=None):
+    async def fake_replan(llm, prompt, current, instruction, images=(), on_call=None, **_kw):
         seen.update(prompt=prompt, instruction=instruction, images=list(images), n=len(current))
         return [RevisedStep(s["id"], s["title"], s["description"], s["glyph"])
                 for s in sorted(current, key=lambda s: s["index"])]
@@ -309,3 +310,47 @@ def test_edit_step_noop_returns_current_without_decision(client):
     r = client.patch(f"/task/{tid}/step/{sid}", json={"title": steps[2]["title"]})
     assert r.status_code == 200 and r.json()["step"]["revision"] == 0
     assert not [d for d in client.get(f"/task/{tid}").json()["decisions"] if d["action"] == "edit"]
+
+
+def test_render_current_marks_polygon_approved_and_edited_steps():
+    """Steps inside a stored boundary are still 'pending' in the store until /run; the
+    replanner must still be told they are approved. Edited steps are marked too."""
+    cur = _steps(("pending", "pending", "approved", "pending", "removed", "pending"))
+    cur[1]["edited_from"] = "Select the original racket"
+    x, y = fixtures.DEMO_AXES
+    poly = [[0.0, 0.0], [0.5, 0.0], [0.5, 0.5], [0.0, 0.5]]
+    positions = {"stp_1": {x: 0.1, y: 0.1}, "stp_2": {x: 0.9, y: 0.9},
+                 "stp_4": {x: 0.2, y: 0.2}, "stp_5": {x: 0.2, y: 0.2},
+                 "stp_6": {x: 0.9}}  # missing a dimension: never approved by this polygon
+    text = render_current(cur, positions, [{"x_dim": x, "y_dim": y, "polygon": poly}])
+    lines = {ln.split()[1]: ln for ln in text.splitlines()}
+    assert "[approved]" in lines["id=stp_1"]  # pending in the store, inside the polygon
+    assert "[approved]" in lines["id=stp_3"]  # checked
+    assert "[approved]" in lines["id=stp_4"]
+    assert "[removed]" in lines["id=stp_5"] and "[approved]" not in lines["id=stp_5"]
+    assert "[pending]" in lines["id=stp_2"] and "[pending]" in lines["id=stp_6"]
+    assert "[edited]" in lines["id=stp_2"]
+    assert sum("[edited]" in ln for ln in lines.values()) == 1
+    assert lines["id=stp_1"].startswith("- id=stp_1 [approved] 1. ")
+    # Without positions/boundaries, statuses are rendered as stored.
+    assert "id=stp_1 [pending]" in render_current(cur)
+
+
+def test_repropose_tells_the_model_about_polygon_approval(client):
+    tid, steps, _ = _plan(client)
+    x, y = fixtures.DEMO_AXES
+    client.put(f"/task/{tid}/boundary", json={"x_dim": x, "y_dim": y, "polygon": fixtures.DEMO_POLYGON})
+    current = client.app.state.oversight.store.get_steps(tid)
+    llm = _FakeLLM([_reply(current)])
+    client.app.state.oversight.settings.fixtures = False
+    client.app.state.oversight.llm = llm
+    try:
+        r = client.post(f"/task/{tid}/repropose", json={"instruction": "keep it"})
+    finally:
+        client.app.state.oversight.settings.fixtures = True
+    assert r.status_code == 200, r.text
+    user = llm.calls[0]["user"]
+    for i in (1, 2, 4):
+        assert f"id={steps[i]['id']} [approved]" in user
+    for i in (3, 5, 6):
+        assert f"id={steps[i]['id']} [pending]" in user

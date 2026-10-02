@@ -55,7 +55,9 @@ def register(app: FastAPI, ctx: Ctx) -> None:
                         await ctx.record_call(task_id, None, rec)
 
                     revised = await replan(st.llm, task["prompt"], current, instruction,
-                                           images=ctx.load_images(task_id), on_call=on_call)
+                                           images=ctx.load_images(task_id), on_call=on_call,
+                                           positions=store.positions_by_step(task_id),
+                                           boundaries=store.get_boundaries(task_id))
                 merged = merge_revision(task_id, current, revised)
                 to_score = [s for s in merged.steps if s["id"] in merged.changed | merged.added]
                 total = len(to_score)

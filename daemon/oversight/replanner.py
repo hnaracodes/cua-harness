@@ -8,9 +8,10 @@ daemon, not the model, decides what counts as unchanged (exact title + descripti
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
+from . import approval
 from .llm import ImageInput, LLMError, StructuredLLM
 from .planner import GLYPHS, MAX_STEPS, MIN_STEPS
 from .store import new_id
@@ -48,6 +49,8 @@ revised plan, in execution order, {MIN_STEPS} to {MAX_STEPS} steps.
 - Respect the human's decisions. A [removed] step stays in the plan verbatim with its id
   (it will not run) unless the instruction explicitly asks to bring it back; then rewrite
   it. Do not rewrite [approved] steps unless the instruction asks you to change them.
+- An [edited] step was reworded by the human. Keep their wording unless the instruction
+  asks you to change it.
 - Leave a step out only if the instruction asks to drop it or it no longer makes sense.
 - Each step is one concrete, individually refusable action. Never bundle risky actions
   (buying, sending, deleting) into a safer step.
@@ -92,18 +95,40 @@ def validate_revision(data: dict, current_ids: set[str]) -> list[RevisedStep]:
     return out
 
 
-def render_current(steps: list[dict]) -> str:
-    return "\n".join(f"- id={s['id']} [{s['status']}] {s['index']}. {s['title']}: {s['description']}"
+def polygon_approved_ids(positions: Mapping[str, Mapping[str, float]] | None,
+                         boundaries: Sequence[Mapping] | None) -> set[str]:
+    """Steps whose RAW point lies inside a stored boundary. The store keeps them 'pending'
+    until /run, but for the user they are already approved."""
+    out: set[str] = set()
+    for b in boundaries or ():
+        pos = {sid: p for sid, p in (positions or {}).items()
+               if b["x_dim"] in p and b["y_dim"] in p}
+        out.update(approval.inside_step_ids(pos, b["x_dim"], b["y_dim"], b.get("polygon") or []))
+    return out
+
+
+def render_current(steps: list[dict],
+                   positions: Mapping[str, Mapping[str, float]] | None = None,
+                   boundaries: Sequence[Mapping] | None = None) -> str:
+    inside = polygon_approved_ids(positions, boundaries)
+
+    def status(s: dict) -> str:
+        return "approved" if s["status"] == "pending" and s["id"] in inside else s["status"]
+
+    return "\n".join(f"- id={s['id']} [{status(s)}]{' [edited]' if s.get('edited_from') else ''} "
+                     f"{s['index']}. {s['title']}: {s['description']}"
                      for s in sorted(steps, key=lambda s: s["index"]))
 
 
 async def replan(llm: StructuredLLM, prompt: str, current_steps: list[dict],
                  instruction: str | None, images: Sequence[ImageInput] = (),
-                 on_call=None) -> list[RevisedStep]:
+                 on_call=None, *, positions: Mapping[str, Mapping[str, float]] | None = None,
+                 boundaries: Sequence[Mapping] | None = None) -> list[RevisedStep]:
     """Validated revised plan. Retries once on invalid output; `on_call(record)` is awaited
-    after every LLM call for cost accounting (like planner.plan_task)."""
+    after every LLM call for cost accounting (like planner.plan_task). `positions` and
+    `boundaries` (the stored ones) let steps inside a polygon read as [approved]."""
     user = (f"Task: {prompt}\n\nCurrent plan (id, [status], index. title: description):\n"
-            f"{render_current(current_steps)}\n\nInstruction from the user: "
+            f"{render_current(current_steps, positions, boundaries)}\n\nInstruction from the user: "
             f"{instruction or '(none: change only what the decisions above require)'}")
     ids = {s["id"] for s in current_steps}
     last: Exception | None = None
