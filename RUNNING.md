@@ -7,6 +7,26 @@ This covers the same-day demo build (docs/07 scope). Run all commands from the
 cd "/Users/hrudaynara/Research/Security CUAs Week 1/appdev"
 ```
 
+## 0. Quick start (redesign)
+
+```sh
+(cd daemon && uv sync) && (cd app && npm install)
+cd app && npm run tauri dev     # the app starts and supervises the daemon itself
+```
+
+First launch opens the setup wizard: model key (stored in the OS keychain), cua-driver,
+the two macOS permissions (Open Settings buttons, they turn green by themselves), and a
+self-test. "Skip, plan-only mode" lets you plan and draw without granting anything.
+
+Browser-only development, no Rust: `cd app && npm run dev:mock`, then open
+`http://localhost:1420/?mock`. Mock flags: `?fast`, `?setup`, `?nonmac`, `?down=1`,
+`?many=30`, `?paper`.
+
+Tests: `cd daemon && uv run pytest -q`; `cd app && npm test && npx playwright test`
+(set `E2E_PORT` per worktree; see the plan's E2E port table). Real-daemon e2e:
+`E2E_DAEMON_URL=http://127.0.0.1:8799 npx playwright test e2e/daemon.spec.ts`, with a
+`--fixtures` daemon on port 8799.
+
 ## 1. Prerequisites
 
 | Tool | Version checked | Notes |
@@ -59,10 +79,12 @@ export CARGO_HOME="/Users/hrudaynara/Research/Security CUAs Week 1/appdev/.toolc
    - `cua-driver call get_cursor_position '{}'` prints a position, not `permissions_pending`.
    - While the daemon runs, `curl -s 127.0.0.1:8765/health` shows `"cua_driver": true`.
 
-As of 2026-10-01 both permissions still read "unknown" on this Mac. Live
-execution is blocked until they are granted. See BLOCKERS.md.
+As of 2026-10-02 both permissions are granted on this Mac (BLOCKERS.md,
+`[W2-2]`). On a new machine, the setup wizard's Permissions step grants them.
 
 ## 2. Start the daemon (port 8765)
+
+The Tauri app starts the daemon for you. Start it by hand only for browser-only development or to pass flags such as --fixtures or --exec simulated.
 
 Pick one mode. Each runs in the foreground and logs to stdout, so leave it in
 its own terminal.

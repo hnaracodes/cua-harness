@@ -53,3 +53,17 @@ Fallback taken: the full flow was verified with the real planner + scorer (claud
 $0.108, 7 steps x 10 dims) and the simulated executor (`--exec simulated`). With the daemon in
 live mode and no grants, `/health` reports `cua_driver: false` and `POST /run` returns 503
 "live executor unavailable ... Nothing ran" instead of starting a run.
+
+## [W2-2] 2026-10-02: permissions granted; live run unblocked
+
+`~/.local/bin/cua-driver permissions status` now reports both grants, so the live executor
+is no longer blocked on permissions. On a new machine, the setup wizard's Permissions step
+(Open Settings buttons, polled until green) is the fix path.
+
+```
+Accessibility:    ✅ granted
+Screen Recording: ✅ granted
+Direct Capture:     ✅ previously verified (permissions_grant, 2026-10-02T04:25:15Z, com.trycua.driver)
+  ℹ️  historical observation; this read-only status did not run a live probe.
+Source: driver-daemon
+```
