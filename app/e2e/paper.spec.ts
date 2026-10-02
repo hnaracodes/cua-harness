@@ -31,3 +31,13 @@ test.describe("paper.css scoping", () => {
     expect(await rootVar(page, "--accent")).toBe("#9d8cff");
   });
 });
+
+test("Exit Paper view sits in the header row, right-aligned, not over content", async ({ page }) => {
+  await page.goto("/?mock&paper");
+  const exit = page.getByTestId("paper-exit");
+  await expect(exit).toBeVisible();
+  const inHeader = await exit.evaluate((el) => !!el.closest("header.app-header"));
+  expect(inHeader).toBe(true);
+  const [eb, hb] = await Promise.all([exit.boundingBox(), page.locator("header.app-header h1").boundingBox()]);
+  expect(eb!.x).toBeGreaterThan(hb!.x + hb!.width);
+});

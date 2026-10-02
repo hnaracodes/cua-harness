@@ -957,3 +957,12 @@ html.tauri .paper-root {
   color: var(--text-2);
   font-weight: 500;
 }
+
+.header-title-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.header-title-row .header-right {
+  margin-left: auto;
+}

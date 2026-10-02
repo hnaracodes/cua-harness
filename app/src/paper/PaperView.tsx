@@ -33,10 +33,17 @@ export function PaperView({ api, conn, session, setPaperView }: ScreenProps) {
   return (
     <div className="paper-root">
       <div className={`app${api.mode === "mock" ? " is-mock" : ""}`}>
-        <button className="link-btn" data-testid="paper-exit" style={{ position: "absolute", top: 12, right: 16 }} onClick={() => setPaperView(false)}>
-          Exit Paper view
-        </button>
-        <Header health={conn.health} mode={api.mode} reachable={conn.reachable} cost={cost} />
+        <Header
+          health={conn.health}
+          mode={api.mode}
+          reachable={conn.reachable}
+          cost={cost}
+          right={
+            <button className="btn btn-small" data-testid="paper-exit" onClick={() => setPaperView(false)}>
+              Exit Paper view
+            </button>
+          }
+        />
         {state.notice && (
           <div className="notice" role="status">
             {state.notice}
