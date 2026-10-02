@@ -23,3 +23,6 @@ app/src-tauri/gen/
 # design scratch (brainstorm companion, playwright screenshots)
 .superpowers/
 .playwright-mcp/
+# playwright run output
+app/test-results/
+app/playwright-report/

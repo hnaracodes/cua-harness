@@ -3,6 +3,7 @@
 // verbatim from the video, seven DRAFT). Positions are derived from labels
 // exactly as the contract says: label i of N owns [i/N, (i+1)/N].
 
+import { hash32 } from "../lib/geometry";
 import type { Dimension, Glyph } from "./types";
 
 export const DEFAULT_TASK =
@@ -206,3 +207,12 @@ export const FIXTURE_STEPS: FixtureStep[] = [
 ];
 
 export const FIXTURE_MODEL = "gpt-5.5";
+
+/** Deterministic cells for a step that is not in the fixture plan (mock re-propose, ?many).
+ *  Same title -> same cells -> same point, so equal titles tie exactly. */
+export function syntheticCells(title: string): [number, number, string][] {
+  return FIXTURE_DIMENSIONS.map((d) => {
+    const h = hash32(`${title}|${d.key}`);
+    return [h % d.labels.length, ((h >>> 8) % 100) / 100, "Synthetic mock score."] as [number, number, string];
+  });
+}
