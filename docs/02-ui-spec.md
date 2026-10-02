@@ -1,5 +1,10 @@
 # 02. UI spec
 
+> **This is the Paper view spec.** The default UI is the chat-first redesign in
+> `docs/superpowers/specs/2026-10-02-ui-redesign-design.md`. This document defines
+> Paper view (`app/src/paper/`), the source-video replica that the docs/04 parity
+> checklist is evaluated against.
+
 Build against `reference/`. Every claim here is from a frame. Measurements are
 approximate, the source video is 1132x720 so exact pixel values are not
 recoverable and should not be guessed at with false precision.

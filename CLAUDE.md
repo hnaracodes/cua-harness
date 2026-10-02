@@ -30,10 +30,13 @@ rest is. Budget accordingly: spend real time on that canvas.
 
 ## Non-negotiables
 
-**Parity before improvement.** The parity checklist in `docs/04-build-plan.md`
-is the definition of done for week one. Do not build anything from the
-improvements list until it is green. This is stated because the improvements
-are more interesting than the parity work and that is exactly the trap.
+**Parity before improvement, now in Paper view.** As of 2026-10-02 the default UI is
+the chat-first redesign (`docs/superpowers/specs/2026-10-02-ui-redesign-design.md`),
+chosen after Kyzyl's review of the sprint build. The source-video layout lives on as
+**Paper view** (`app/src/paper/`, toggle in the workspace header or `?paper`), and the
+parity checklist in `docs/04-build-plan.md` is evaluated against Paper view. The
+boundary gesture, live reclassification, the ten dimensions, and the approved-only
+executor are unchanged in both views.
 
 **The daemon owns all logic.** The UI renders and captures gestures. Planning,
 scoring, execution, and persistence live in the Python daemon. The app should
@@ -65,7 +68,7 @@ system.
 
 | Concern | Choice |
 |---|---|
-| App | Tauri 2 + React + TypeScript (native webview on macOS, Windows, Linux) |
+| App | Tauri 2 + React + TypeScript; the Rust shell launches and supervises the daemon |
 | Canvas | SVG with pointer events and custom hit testing (Canvas2D only if badge count gets large). Must feel as immediate as native |
 | Daemon | Python 3.12, FastAPI, SSE. Frozen with PyInstaller and shipped as a Tauri sidecar so users never install Python |
 | Agent substrate | trycua `cua-driver` on all three OSes (the source app names `cua-driver` in its title bar). Accessibility tree first, pixels as fallback |

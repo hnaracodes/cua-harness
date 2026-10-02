@@ -14,7 +14,7 @@ export default defineConfig({
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"], viewport: { width: 1280, height: 860 } } }],
   webServer: {
     command: `npx vite --port ${PORT} --strictPort`,
-    env: { VITE_MOCK: "1" },
+    env: process.env.E2E_DAEMON_URL ? { VITE_DAEMON_URL: process.env.E2E_DAEMON_URL } : { VITE_MOCK: "1" },
     url: `http://localhost:${PORT}`,
     reuseExistingServer: false,
     timeout: 60_000,
