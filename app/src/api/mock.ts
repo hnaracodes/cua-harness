@@ -8,7 +8,7 @@ import { classify, indexScores, pairKey, splitPairKey } from "../lib/approval";
 import type { PolygonMap } from "../lib/approval";
 import type { DaemonApi, EventListener } from "./client";
 import { HttpError } from "./errors";
-import { FIXTURE_DIMENSIONS, FIXTURE_MODEL, FIXTURE_STEPS } from "./fixtures";
+import { FIXTURE_DIMENSIONS, FIXTURE_MODEL, FIXTURE_STEPS, syntheticCells } from "./fixtures";
 import type {
   AppSettings,
   Attachment,
@@ -17,7 +17,9 @@ import type {
   EventKind,
   Health,
   OversightEvent,
+  PermState,
   PlanResponse,
+  Provider,
   RunBody,
   ImageMime,
   RunRecord,
@@ -42,12 +44,24 @@ interface MockTask {
   attachments: Attachment[];
   runs: RunRecord[];
   revision: number;
+  frameSeq: number;
+  frames: Map<number, string>;
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const rid = (p: string) => `${p}_${Math.random().toString(36).slice(2, 10)}`;
 
 export function createMockDaemon(): DaemonApi {
+  const q = typeof location !== "undefined" ? new URLSearchParams(location.search) : new URLSearchParams();
+  const MODE = {
+    fast: q.has("fast"),
+    setup: q.has("setup"),
+    nonmac: q.has("nonmac"),
+    down: q.get("down") === "1",
+    many: q.has("many") ? Math.min(60, Math.max(6, Number(q.get("many")) || 6)) : 0,
+  };
+  const ms = (n: number) => (MODE.fast ? Math.max(10, Math.round(n / 10)) : n);
+  const ACTION_MS = MODE.fast ? 60 : 650;
   const tasks = new Map<string, MockTask>();
   const blobs = new Map<string, { att: Attachment; url: string }>();
   const settings: AppSettings = {
@@ -56,6 +70,27 @@ export function createMockDaemon(): DaemonApi {
     plan_only: false,
     models: { anthropic: ["claude-sonnet-5-5", "claude-opus-5-5"], openai: ["gpt-5.5"] },
   };
+  const na: PermState = "n/a";
+  const setup: SetupStatus = MODE.setup
+    ? {
+        platform: MODE.nonmac ? "linux" : "macos",
+        key: { provider: "anthropic", present: false, source: "none", tested: false, warning: null },
+        driver: { installed: false, version: null, running: false },
+        permissions: MODE.nonmac ? { accessibility: na, screen_recording: na } : { accessibility: "unknown", screen_recording: "unknown" },
+        self_test: { passed_at: null },
+        plan_only: false,
+        complete: false,
+      }
+    : {
+        platform: MODE.nonmac ? "linux" : "macos",
+        key: { provider: "anthropic", present: true, source: "env", tested: true, warning: null },
+        driver: { installed: true, version: "mock", running: true },
+        permissions: MODE.nonmac ? { accessibility: na, screen_recording: na } : { accessibility: "granted", screen_recording: "granted" },
+        self_test: { passed_at: new Date().toISOString() },
+        plan_only: false,
+        complete: true,
+      };
+  const permsOk = () => (["accessibility", "screen_recording"] as const).every((k) => setup.permissions[k] === "granted" || setup.permissions[k] === "n/a");
   let costTotal = 0;
   let seq = 0;
 
@@ -89,11 +124,30 @@ export function createMockDaemon(): DaemonApi {
     return t;
   };
 
-  return {
+  /** Latest remove/restore decision per step, as the daemon's stored status would be. */
+  const removedSet = (t: MockTask) => {
+    const out = new Set<string>();
+    for (const d of t.decisions) {
+      if (d.action === "remove") out.add(d.step_id);
+      else if (d.action === "restore") out.delete(d.step_id);
+    }
+    return out;
+  };
+
+  const scoresFor = (s: Step): Score[] =>
+    syntheticCells(s.title).map(([li, off, rationale], d) => {
+      const dim = FIXTURE_DIMENSIONS[d];
+      return { step_id: s.id, dimension: dim.key, label: dim.labels[li], position: (li + off) / dim.labels.length, confidence: 0.5, rationale };
+    });
+
+  const clip = (s: string, n = 60) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+
+  const api: DaemonApi = {
     mode: "mock",
     baseUrl: "mock://in-browser",
 
     async health(): Promise<Health> {
+      if (MODE.down) throw new Error("mock: daemon down (?down=1)");
       return {
         daemon: "ok",
         api_key: true,
@@ -103,7 +157,7 @@ export function createMockDaemon(): DaemonApi {
         fixtures: true,
         exec_mode: "simulated",
         cost_usd_total: costTotal,
-        setup_complete: true,
+        setup_complete: setup.complete,
         plan_only: settings.plan_only,
         status_line: `Mock daemon (in-browser fixtures). cua-driver simulated, model ${FIXTURE_MODEL}.`,
       };
@@ -124,17 +178,24 @@ export function createMockDaemon(): DaemonApi {
         createdAt: new Date().toISOString(),
         attachments: attachmentIds.map((a) => blobs.get(a)!.att),
         runs: [], revision: 0,
+        frameSeq: 0, frames: new Map(),
       });
       return { task_id: id };
     },
 
     async plan(taskId: string): Promise<PlanResponse> {
       const t = getTask(taskId);
-      const total = FIXTURE_STEPS.length;
+      const n = MODE.many || FIXTURE_STEPS.length;
+      const specs = Array.from({ length: n }, (_, i) =>
+        i < FIXTURE_STEPS.length
+          ? FIXTURE_STEPS[i]
+          : { title: `Extra step ${Math.floor((i - FIXTURE_STEPS.length) / 2) + 1}`, description: "Synthetic step for crowding (?many).", glyph: "generic" as const, cells: syntheticCells(`Extra step ${Math.floor((i - FIXTURE_STEPS.length) / 2) + 1}`) },
+      );
+      const total = n;
       emit(t, "plan_progress", { stage: "planning", message: "Generating a high-level plan for the task.", done: 0, total });
-      await sleep(1100);
+      await sleep(ms(1100));
       cost(t, "plan", 812, 640, 1100);
-      t.steps = FIXTURE_STEPS.map((s, i) => ({
+      t.steps = specs.map((s, i) => ({
         id: `stp_${taskId.slice(4)}_${i + 1}`,
         task_id: taskId,
         index: i + 1,
@@ -148,9 +209,9 @@ export function createMockDaemon(): DaemonApi {
       emit(t, "plan_progress", { stage: "scoring", message: `${total} step(s). Scoring actions and placing them on the grid.`, done: 0, total });
       t.scores = [];
       for (let i = 0; i < total; i++) {
-        await sleep(320);
+        await sleep(ms(320));
         const st = t.steps[i];
-        FIXTURE_STEPS[i].cells.forEach(([li, off, rationale], d) => {
+        specs[i].cells.forEach(([li, off, rationale], d) => {
           const dim = FIXTURE_DIMENSIONS[d];
           const n = dim.labels.length;
           t.scores.push({
@@ -213,7 +274,10 @@ export function createMockDaemon(): DaemonApi {
     },
 
     async listTasks() {
-      return [...tasks.values()].reverse().map((t) => ({ id: t.id, prompt: t.prompt, created_at: t.createdAt, step_count: t.steps.length }));
+      return [...tasks.values()]
+        .map((t, i) => ({ t, i }))
+        .sort((a, b) => b.t.createdAt.localeCompare(a.t.createdAt) || b.i - a.i)
+        .map(({ t }) => ({ id: t.id, prompt: t.prompt, created_at: t.createdAt, step_count: t.steps.length }));
     },
     async getTask(taskId: string) {
       const t = getTask(taskId);
@@ -242,10 +306,35 @@ export function createMockDaemon(): DaemonApi {
     attachmentUrl: (id: string) => blobs.get(id)?.url ?? "",
     async repropose(taskId: string, instruction: string | null) {
       const t = getTask(taskId);
-      t.revision += 1;
+      if (t.running) throw new HttpError(409, { error: "a run is in progress for this task" });
+      if (!t.steps.length) throw new HttpError(409, { error: "task has no plan yet" });
       emit(t, "plan_progress", { stage: "planning", message: "Revising the plan.", done: 0, total: t.steps.length });
-      await sleep(400);
-      emit(t, "plan_revised", { revision: t.revision, instruction, changed_step_ids: [], added_step_ids: [], dropped_step_ids: [] });
+      await sleep(ms(600));
+      t.revision += 1;
+      const text = (instruction ?? "").trim();
+      const changed: string[] = [];
+      const added: string[] = [];
+      if (text && /\badd\b/i.test(text)) {
+        const idx = t.steps.length + 1;
+        const s: Step = {
+          id: `stp_${taskId.slice(4)}_r${t.revision}_${idx}`, task_id: taskId, index: idx, title: clip(text),
+          description: `Added on request: ${text}`, glyph: "generic", status: "pending", edited_from: null, revision: t.revision,
+        };
+        t.steps.push(s);
+        t.scores.push(...scoresFor(s));
+        added.push(s.id);
+      } else if (text) {
+        const removed = removedSet(t);
+        const target = [...t.steps].reverse().find((s) => !removed.has(s.id));
+        if (target) {
+          target.edited_from = target.edited_from ?? target.title;
+          target.title = clip(`${target.title} (${text})`);
+          target.revision = t.revision;
+          t.scores = t.scores.filter((x) => x.step_id !== target.id).concat(scoresFor(target));
+          changed.push(target.id);
+        }
+      }
+      emit(t, "plan_revised", { revision: t.revision, instruction: text || null, changed_step_ids: changed, added_step_ids: added, dropped_step_ids: [] });
       emit(t, "plan_progress", { stage: "done", message: "Plan revised.", done: t.steps.length, total: t.steps.length });
       return { task_id: taskId, steps: t.steps.map((s) => ({ ...s })), scores: t.scores.map((s) => ({ ...s })), revision: t.revision };
     },
@@ -259,27 +348,52 @@ export function createMockDaemon(): DaemonApi {
       if (patch.description?.trim()) s.description = patch.description.trim();
       return { step: { ...s }, scores: t.scores.filter((x) => x.step_id === stepId).map((x) => ({ ...x })) };
     },
-    frameUrl: () => "",
+    frameUrl: (taskId: string, seq: number) => tasks.get(taskId)?.frames.get(seq) ?? "",
     async setupStatus(): Promise<SetupStatus> {
-      return {
-        platform: "macos",
-        key: { provider: settings.provider, present: true, source: "env", tested: true, warning: null },
-        driver: { installed: true, version: "mock", running: true },
-        permissions: { accessibility: "granted", screen_recording: "granted" },
-        self_test: { passed_at: new Date().toISOString() },
-        plan_only: settings.plan_only,
-        complete: true,
-      };
+      return JSON.parse(JSON.stringify(setup)) as SetupStatus;
     },
-    async setKey() { return { ok: true, error: null }; },
-    async installDriver() { return { ok: true, version: "mock", log_tail: "" }; },
-    async startDriver() { return { ok: true, error: null }; },
-    async openPermission() { return { ok: true }; },
-    async selfTest() { return { ok: true, detail: "mock self-test passed" }; },
-    async completeSetup() { return { ok: true }; },
-    async getSettings() { return { ...settings, models: { ...settings.models } }; },
+    async setKey(provider: Provider, key: string) {
+      await sleep(ms(300));
+      if (!key.trim().startsWith("sk-")) return { ok: false, error: "That doesn't look like an API key (it should start with sk-)." };
+      setup.key = { provider, present: true, source: "keychain", tested: true, warning: null };
+      settings.provider = provider;
+      return { ok: true, error: null };
+    },
+    async installDriver() {
+      await sleep(ms(800));
+      setup.driver = { installed: true, version: "0.32.0 (mock)", running: false };
+      return { ok: true, version: setup.driver.version, log_tail: "Installed CuaDriver.app (mock)." };
+    },
+    async startDriver() {
+      if (!setup.driver.installed) return { ok: false, error: "cua-driver is not installed" };
+      await sleep(ms(300));
+      setup.driver.running = true;
+      return { ok: true, error: null };
+    },
+    async openPermission(which: "accessibility" | "screen_recording") {
+      if (setup.permissions[which] !== "n/a") setTimeout(() => { setup.permissions[which] = "granted"; }, MODE.fast ? 300 : 1500);
+      return { ok: true };
+    },
+    async selfTest() {
+      await sleep(ms(1000));
+      if (!setup.driver.running) return { ok: false, detail: "cua-driver is not running." };
+      if (!permsOk()) return { ok: false, detail: "Accessibility and Screen Recording must both be allowed for CuaDriver." };
+      setup.self_test = { passed_at: new Date().toISOString() };
+      return { ok: true, detail: "Typed \"hello\" into a scratch window and read it back." };
+    },
+    async completeSetup() {
+      setup.complete = true;
+      return { ok: true };
+    },
+    async getSettings() {
+      return { ...settings, models: { ...settings.models } };
+    },
     async putSettings(patch: Partial<Pick<AppSettings, "provider" | "model" | "plan_only">>) {
+      if (patch.provider && !(patch.provider in settings.models)) throw new HttpError(400, { error: `unknown provider ${patch.provider}` });
+      const prov = patch.provider ?? settings.provider;
+      if (patch.model && !settings.models[prov].includes(patch.model)) throw new HttpError(400, { error: `unknown model ${patch.model}` });
       Object.assign(settings, patch);
+      if (patch.plan_only !== undefined) setup.plan_only = patch.plan_only;
       return { ...settings, models: { ...settings.models } };
     },
 
@@ -290,6 +404,15 @@ export function createMockDaemon(): DaemonApi {
       return () => t.listeners.delete(onEvent);
     },
   };
+  if (typeof window !== "undefined") {
+    (window as unknown as Record<string, unknown>).__oversightMock = {
+      api,
+      setDown: (v: boolean) => {
+        MODE.down = v;
+      },
+    };
+  }
+  return api;
 
   async function simulateRun(t: MockTask, runId: string, approved: Set<string>, removed: Set<string>) {
     const steps = t.steps.filter((s) => approved.has(s.id));
@@ -297,6 +420,7 @@ export function createMockDaemon(): DaemonApi {
     for (const s of t.steps) if (removed.has(s.id)) emit(t, "step_removed", { step_id: s.id, index: s.index, title: s.title }, runId);
     const attempted: string[] = [];
     const completed: string[] = [];
+    const summaries = new Map<string, string>();
     let n = 0;
     let stopped = false;
     for (const s of steps) {
@@ -308,27 +432,46 @@ export function createMockDaemon(): DaemonApi {
       if (!approved.has(s.id)) throw new Error(`UnapprovedStepError: ${s.id}`);
       attempted.push(s.id);
       emit(t, "step_started", { step_id: s.id, index: s.index, title: s.title }, runId);
-      const script = simActions(s);
+      const t0 = Date.now();
+      let stepActions = 0;
       let halted = false;
-      for (const a of script) {
-        await sleep(650);
+      for (const a of simActions(s)) {
+        await sleep(ACTION_MS);
         if (t.stop) {
           halted = true;
           break;
         }
         n += 1;
+        stepActions += 1;
         emit(t, "action", { step_id: s.id, n, mode: "sim", verb: a[0], target: a[1], detail: a[2], ok: true, error: null }, runId);
-        cost(t, "run", 2100, 180, 650, runId);
+        cost(t, "run", 2100, 180, ACTION_MS, runId);
+        t.frameSeq += 1;
+        t.frames.set(t.frameSeq, frameSvg(s.title, a[0], a[1], n));
+        emit(t, "frame", { step_id: s.id, seq: t.frameSeq }, runId);
       }
+      const duration_ms = Date.now() - t0;
       if (halted) {
-        emit(t, "step_result", { step_id: s.id, index: s.index, status: "stopped", summary: "Stopped by the user." }, runId);
+        emit(t, "step_result", { step_id: s.id, index: s.index, status: "stopped", summary: "Stopped by the user.", actions: stepActions, duration_ms }, runId);
         stopped = true;
         break;
       }
       completed.push(s.id);
-      emit(t, "step_result", { step_id: s.id, index: s.index, status: "done", summary: simSummary(s) }, runId);
+      summaries.set(s.id, simSummary(s));
+      emit(t, "step_result", { step_id: s.id, index: s.index, status: "done", summary: summaries.get(s.id)!, actions: stepActions, duration_ms }, runId);
     }
     t.running = false;
+    const skipped = [
+      ...t.steps.filter((s) => removed.has(s.id)).map((s) => ({ step_id: s.id, reason: "You removed this step before the run." })),
+      ...steps.filter((s) => !attempted.includes(s.id)).map((s) => ({ step_id: s.id, reason: "Not run: the run was stopped." })),
+    ];
+    emit(t, "run_recap", {
+      headline: stopped
+        ? `Stopped after ${completed.length} of ${steps.length} approved steps.`
+        : `Done. Completed ${completed.length} of ${steps.length} approved steps.`,
+      done: completed.map((id) => ({ step_id: id, text: summaries.get(id)! })),
+      skipped,
+      source: "fallback",
+    }, runId);
     const final = stopped
       ? { status: "stopped" as const, message: "Run stopped by the user. Remaining approved steps were not attempted.", attempted, completed }
       : { status: "completed" as const, message: "All approved steps were attempted.", attempted, completed };
@@ -397,4 +540,21 @@ function simSummary(s: Step): string {
     default:
       return "Chose Wilson Ultra 100 Junior, $79.99, 4.6 stars.";
   }
+}
+
+const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+/** A small deterministic stand-in for the agent's window capture. */
+function frameSvg(title: string, verb: string, target: string, n: number): string {
+  const svg =
+    `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="400" viewBox="0 0 640 400">` +
+    `<rect width="640" height="400" fill="#101010"/>` +
+    `<rect width="640" height="28" fill="#1d1d1d"/>` +
+    `<circle cx="16" cy="14" r="5" fill="#e46a5c"/><circle cx="32" cy="14" r="5" fill="#e8a948"/><circle cx="48" cy="14" r="5" fill="#5fc48a"/>` +
+    `<text x="68" y="18" fill="#8f8f8f" font-family="sans-serif" font-size="12">agent desk · simulated</text>` +
+    `<text x="24" y="84" fill="#ececec" font-family="sans-serif" font-size="20">${esc(title)}</text>` +
+    `<text x="24" y="118" fill="#8f8f8f" font-family="sans-serif" font-size="14">action ${n}: ${esc(verb)} ${esc(target)}</text>` +
+    `<rect x="24" y="150" width="592" height="220" rx="10" fill="#1b1b1b" stroke="#262626"/>` +
+    `</svg>`;
+  return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
 }
