@@ -184,7 +184,7 @@ def test_planner_adds_image_note_only_with_images():
 def test_plan_live_sends_task_attachments_to_planner(tmp_path, monkeypatch):
     seen = {}
 
-    async def fake_plan_task(llm, prompt, selected_app, on_call=None, images=()):
+    async def fake_plan_task(llm, prompt, selected_app, on_call=None, images=(), catalog=()):
         seen["images"] = list(images)
         return [PlannedStep(f"Step {i}", "Do it.", "generic") for i in range(4)]
 

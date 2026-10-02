@@ -35,6 +35,7 @@ from typing import Any, Literal
 
 from oversight.cua import CuaDriver, CuaDriverError, WindowState
 from oversight.browser_desk import BrowserDesk
+from oversight.apps import is_denied
 from oversight.host_desk import AgentDesk, AppDesk, default_profile_dir, route_app
 
 Emit = Callable[[str, dict], Awaitable[None]]
@@ -72,10 +73,17 @@ class ExecStep:
     index: int
     title: str
     description: str
+    # The native app the plan put this step in (None: the agent's browser).
+    app_name: str | None = None
+    app_bundle: str | None = None
 
 
 class UnapprovedStepError(AssertionError):
     """A step outside the approved set reached the executor. Nothing ran."""
+
+
+class AppNotAllowedError(RuntimeError):
+    """The step names an app on the denylist (oversight.apps). It fails, unrun."""
 
 
 @dataclass
@@ -906,7 +914,14 @@ async def run_steps(
             apps: dict[str, AppDesk] = {}
 
             async def desk_for(step: ExecStep) -> Desk:
-                route = route_app(task_prompt, step.title, step.description) if config.route_apps else None
+                route: tuple[str, str] | None = None
+                if step.app_bundle:
+                    if is_denied(step.app_bundle):
+                        raise AppNotAllowedError("This app is not allowed for the agent.")
+                    if config.route_apps:
+                        route = (step.app_bundle, step.app_name or step.app_bundle)
+                elif config.route_apps:  # plans from before the app field: name-based routing
+                    route = route_app(task_prompt, step.title, step.description)
                 if route:
                     bundle, name = route
                     if bundle not in apps:
@@ -941,12 +956,17 @@ async def run_steps(
         outcome: StepOutcome
         assert_step_approved(step, approved_ids)
         rs.attempted.append(step.id)
-        await emit("step_started", {"step_id": step.id, "index": step.index, "title": step.title})
+        await emit("step_started", {"step_id": step.id, "index": step.index, "title": step.title,
+                                    "app": step.app_name if step.app_bundle else None})
         actions_before, t_step = rs.actions_used, time.monotonic()
         try:
+            if step.app_bundle and is_denied(step.app_bundle):
+                raise AppNotAllowedError("This app is not allowed for the agent.")
             outcome = await _dispatch_step(rs, step, approved_ids, runner)
         except UnapprovedStepError:
             raise
+        except AppNotAllowedError as e:  # refused before any desk is touched
+            outcome = StepOutcome("failed", str(e))
         except Exception as e:  # driver/model failure: fail this step, stop the run
             outcome = StepOutcome("failed", f"{type(e).__name__}: {e}")
         await emit("step_result", {"step_id": step.id, "index": step.index, "status": outcome.status,
