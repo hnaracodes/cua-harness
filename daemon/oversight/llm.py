@@ -7,6 +7,7 @@ persisting the record and emitting a `cost` event (see api.py).
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import time
@@ -67,6 +68,35 @@ class ImageInput:
     data: bytes
 
 
+IMAGE_MIMES = ("image/png", "image/jpeg", "image/webp")
+
+
+def _check_images(images: Sequence[ImageInput]) -> None:
+    for im in images:
+        if im.mime not in IMAGE_MIMES:
+            raise LLMError(f"unsupported image type {im.mime}; use PNG, JPEG or WebP")
+
+
+def anthropic_user_content(user: str, images: Sequence[ImageInput]) -> str | list[dict]:
+    """Plain string when there are no images (request unchanged), else image blocks + text."""
+    if not images:
+        return user
+    blocks: list[dict] = [{"type": "image", "source": {
+        "type": "base64", "media_type": im.mime,
+        "data": base64.b64encode(im.data).decode()}} for im in images]
+    blocks.append({"type": "text", "text": user})
+    return blocks
+
+
+def openai_user_content(user: str, images: Sequence[ImageInput]) -> str | list[dict]:
+    if not images:
+        return user
+    blocks: list[dict] = [{"type": "image_url", "image_url": {
+        "url": f"data:{im.mime};base64,{base64.b64encode(im.data).decode()}"}} for im in images]
+    blocks.append({"type": "text", "text": user})
+    return blocks
+
+
 class LLMError(RuntimeError):
     def __init__(self, message: str, record: CallRecord | None = None):
         super().__init__(message)
@@ -100,16 +130,15 @@ class StructuredLLM:
                    schema_name: str, effort: str = "low",
                    max_tokens: int = 8000,
                    images: Sequence[ImageInput] = ()) -> tuple[dict, CallRecord]:
-        if images:
-            # Wave 0 gate. Track D2 replaces this with Anthropic/OpenAI image blocks.
-            raise LLMError("image input not implemented")
         rec = CallRecord(scope=scope, provider=self.provider, model=self.model)
         t0 = time.perf_counter()
         try:
+            _check_images(images)
             if self.provider == "anthropic":
-                data = await self._call_anthropic(rec, system, user, schema, effort, max_tokens)
+                data = await self._call_anthropic(rec, system, user, schema, effort, max_tokens,
+                                                  images)
             elif self.provider == "openai":
-                data = await self._call_openai(rec, system, user, schema, schema_name)
+                data = await self._call_openai(rec, system, user, schema, schema_name, images)
             else:
                 raise LLMError(f"unknown provider {self.provider}")
         except LLMError as e:
@@ -129,7 +158,8 @@ class StructuredLLM:
         return data, rec
 
     async def _call_anthropic(self, rec: CallRecord, system: str, user: str, schema: dict,
-                              effort: str, max_tokens: int) -> dict:
+                              effort: str, max_tokens: int,
+                              images: Sequence[ImageInput] = ()) -> dict:
         import anthropic
 
         client = self._anthropic()
@@ -137,7 +167,7 @@ class StructuredLLM:
             model=self.model,
             max_tokens=max_tokens,
             system=system,
-            messages=[{"role": "user", "content": user}],
+            messages=[{"role": "user", "content": anthropic_user_content(user, images)}],
             output_config={"effort": effort,
                            "format": {"type": "json_schema", "schema": schema}},
         )
@@ -174,12 +204,12 @@ class StructuredLLM:
             raise LLMError(f"invalid JSON from model: {e}") from e
 
     async def _call_openai(self, rec: CallRecord, system: str, user: str, schema: dict,
-                           schema_name: str) -> dict:
+                           schema_name: str, images: Sequence[ImageInput] = ()) -> dict:
         client = self._openai()
         resp = await client.chat.completions.create(
             model=self.model,
             messages=[{"role": "system", "content": system},
-                      {"role": "user", "content": user}],
+                      {"role": "user", "content": openai_user_content(user, images)}],
             response_format={"type": "json_schema",
                              "json_schema": {"name": schema_name, "schema": schema,
                                              "strict": True}},
