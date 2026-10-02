@@ -154,6 +154,7 @@ class Store:
 
     # ------------------------------------------------------------ steps + scores
     def replace_plan(self, task_id: str, steps: list[dict], scores: list[dict]) -> None:
+        """Swap in a new plan. Also drops the task's stored boundaries (see below)."""
         with self._lock:
             self.db.execute("BEGIN")
             try:
@@ -162,6 +163,10 @@ class Store:
                 for sid in old:
                     self.db.execute("DELETE FROM scores WHERE step_id=?", (sid,))
                 self.db.execute("DELETE FROM steps WHERE task_id=?", (task_id,))
+                # Polygons were drawn against the old plan's scores. Keeping them would let
+                # a run with `boundaries` omitted approve new steps nobody looked at. Runs
+                # keep their own copy of the boundaries they used, so history survives.
+                self.db.execute("DELETE FROM boundaries WHERE task_id=?", (task_id,))
                 for s in steps:
                     self.db.execute(
                         "INSERT INTO steps (id, task_id, idx, title, description, glyph, status, "

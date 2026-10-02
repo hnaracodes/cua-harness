@@ -258,12 +258,28 @@ GET  /task/{id}/events?since=<seq>   SSE. Replays stored events after `since`, t
   approvals; Clear deletes only the polygon of the current axis pair.
 - The point for axis pair (x, y) is the RAW `(score[x].position,
   score[y].position)`. Display jitter (deterministic by step id, at most 0.012
-  normalized) is cosmetic and never used for classification.
+  normalized) is cosmetic and never used for classification. Badges that
+  still collide are spread apart for legibility, but never more than 9 px
+  (badge radius minus 4) from their true point, so the true point always lies
+  inside the visible badge disk. A dot on a spread badge marks its true point.
+- A freehand stroke is simplified to handles on release only in a way that
+  keeps every step's inside/outside result identical to the raw stroke the
+  user saw while drawing (stroke vertices are re-inserted where needed).
+- Polygon coordinates must be finite and inside [0, 1]; anything else is 400.
 - Inside test is the even-odd ray cast, written the same way in TS and Python:
   for each edge (i, j=i-1): `if ((yi > y) != (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi): inside = !inside`.
 - `POST /run` recomputes the approved set from the stored scores and the body's
   checked, removed and boundaries. If it differs from `approved_step_ids`, or
   any non-removed step is still pending, it returns 409 and nothing runs.
+- Removals are owned by the daemon. A step whose stored status is `removed`
+  (a `remove` decision with no later `restore`, or excluded by an earlier run)
+  must appear in `removed_step_ids`, otherwise `POST /run` returns 409
+  `{"error", "removed": [ids]}`.
+- One run per task. `POST /run` reserves the task's run slot before its first
+  await, so a concurrent `/run` gets 409. In live mode the cua-driver
+  preflight runs before anything is written, so a 503 leaves no trace.
+- `POST /task/{id}/plan?force=true` deletes the task's stored boundaries
+  (they were drawn against the old scores). Each run keeps its own copy.
 
 ### SSE events
 

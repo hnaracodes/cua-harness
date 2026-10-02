@@ -114,6 +114,59 @@ export function simplifyClosedStroke(stroke: readonly Point[], minV = 6, maxV = 
   return best.length >= 3 ? best : stroke.slice(0, 3);
 }
 
+/**
+ * Simplify a closed freehand stroke WITHOUT changing what it encloses.
+ *
+ * While drawing, steps are classified against the raw stroke; on release the
+ * polygon is simplified to a handful of handles. RDP chords cut across concave
+ * dents, so a badge the user curved around could flip colour on pointerup.
+ * This keeps the simplified ring as a subsequence of the stroke and re-inserts
+ * the stroke vertex nearest any probe whose inside/outside status differs from
+ * the raw stroke, until every probe agrees. With every vertex kept the ring is
+ * the stroke itself, so this always terminates in agreement.
+ *
+ * `stroke` is in normalized space (what classification uses), `strokePx` is the
+ * same stroke in pixels (isotropic tolerance), `probes`/`probesPx` are the RAW
+ * step points for the current axis pair in both spaces.
+ */
+export function simplifyStrokePreserving(
+  stroke: readonly Point[],
+  strokePx: readonly Point[],
+  probes: readonly Point[],
+  probesPx: readonly Point[],
+  minV = 6,
+  maxV = 10,
+): Point[] {
+  if (stroke.length < 3) return stroke.slice();
+  const at = new Map<Point, number>();
+  strokePx.forEach((p, i) => at.set(p, i));
+  const keep = new Set<number>();
+  for (const q of simplifyClosedStroke(strokePx, minV, maxV)) {
+    const i = at.get(q);
+    if (i !== undefined) keep.add(i);
+  }
+  const want = probes.map((q) => pointInPolygon(q[0], q[1], stroke));
+  for (let guard = 0; guard <= stroke.length; guard++) {
+    const ring = [...keep].sort((a, b) => a - b).map((i) => stroke[i]);
+    const bad = probes.findIndex((q, k) => pointInPolygon(q[0], q[1], ring) !== want[k]);
+    if (bad < 0) return ring;
+    const tp = probesPx[bad];
+    let best = -1;
+    let bestD = Infinity;
+    for (let i = 0; i < strokePx.length; i++) {
+      if (keep.has(i)) continue;
+      const d = Math.hypot(strokePx[i][0] - tp[0], strokePx[i][1] - tp[1]);
+      if (d < bestD) {
+        bestD = d;
+        best = i;
+      }
+    }
+    if (best < 0) break;
+    keep.add(best);
+  }
+  return stroke.slice();
+}
+
 function dedupe(ring: Point[], minDist: number): Point[] {
   const out: Point[] = [];
   for (const p of ring) {

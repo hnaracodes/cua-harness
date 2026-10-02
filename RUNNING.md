@@ -205,7 +205,8 @@ curl -s $B/tasks
 T=tsk_f10e4b041323
 
 # 3. Replay the plan. With no ?force=true this returns the stored steps and
-#    scores and makes no LLM call. ?force=true regenerates and costs money.
+#    scores and makes no LLM call. ?force=true regenerates, costs money, and
+#    deletes the task's stored boundaries (they were drawn for the old scores).
 curl -s -X POST $B/task/$T/plan
 
 # 4. Inspect everything: steps, scores, boundaries, decisions, runs, llm_calls, cost_usd
@@ -213,6 +214,7 @@ curl -s $B/task/$T
 
 # 5. Re-run the last approved set. With "boundaries": null the daemon reuses the
 #    stored boundary, re-checks the approval rule, and returns 409 on a mismatch.
+#    Steps the daemon has recorded as removed must stay in removed_step_ids.
 BODY=$(curl -s $B/task/$T | python3 -c "
 import json,sys; r=json.load(sys.stdin)['runs'][-1]
 print(json.dumps({'approved_step_ids': r['approved'], 'checked_step_ids': [],
@@ -246,8 +248,9 @@ model sees the last 3; older ones are pruned. They are not written to disk.
 ## 7. Tests
 
 ```sh
-(cd daemon && uv run pytest -q)     # 46 passed on 2026-10-01
+(cd daemon && uv run pytest -q)     # 55 passed on 2026-10-01
 (cd app && npm run typecheck)       # tsc clean
+(cd app && npm test)                # geometry: release never reclassifies a step
 ```
 
 ## Known issues
@@ -266,14 +269,34 @@ model sees the last 3; older ones are pruned. They are not written to disk.
 - **Fixture rehearsals write to the real store by default.** Fixtures and real
   mode share `daemon/.data/oversight.db`. Set `OVERSIGHT_DATA_DIR` to keep them
   apart.
-- **Mock fallback is silent.** If the daemon is down when the app starts, the
-  app uses the in-browser mock. Start the daemon first, or reload after
-  starting it.
-- **Real scores cluster near low/low.** The canvas pushes overlapping badges
-  apart for display and draws a dashed leader to each badge's true point.
-  Approval always uses the raw scored position, so a badge drawn just inside
-  the polygon can still be pending if its true point (the leader dot) is
-  outside. Draw the loop around the dots.
+- **Mock fallback is silent.** The app probes `/health` once at startup with a
+  1.5 s timeout. If the daemon is down or slow (likely once it is a sidecar),
+  the app uses the in-browser mock for the whole session and never retries;
+  the only sign is a warn-toned "Daemon (mock)" pill. The mock plans and
+  "executes" in the browser with its own copy of the dimension definitions
+  (`app/src/api/fixtures.ts`), not `GET /dimensions`. Start the daemon first,
+  or reload after starting it.
+- **Real scores cluster near low/low.** Overlapping badges are spread apart for
+  display, but never more than 9 px from their true point, so the true point
+  (the dark dot on a spread badge) is always under the badge you see. Stacks
+  of 4 or 5 badges still overlap partly.
+- **`/run` accepts two polygons for the same axis pair.** Approval uses the
+  union of both, but only the last one is stored per pair, so the stored
+  boundary no longer reproduces that approval (the run record keeps both).
+  The UI never sends duplicates.
+- **Decision snapshots can lag the canvas.** A remove or check records the
+  step's scores (its placement) and inside/outside flags computed from the
+  stored boundaries, which trail the UI by the 250 ms debounced PUT and miss a
+  shape still being drawn. The snapshot also does not record which axis pair
+  was on screen, and the UI always sends `source: "plan_panel"`, never `grid`.
+- **A restore immediately followed by Approve & Run can 409.** The daemon owns
+  removals, and the restore POST may land after the run POST. Click again.
+- **Agent-desk flags are not exposed.** `screenshot_history`,
+  `own_browser_profile`, `ax_first` and `window_scoped_screenshots` exist only
+  on `ExecConfig`; the daemon sets mode, provider and model only, so `testing/`
+  cannot toggle them through the CLI or env yet. `window_scoped_screenshots=False`
+  (with `OVERSIGHT_ALLOW_FULL_SCREEN=1`) only unlocks the driver guard: the
+  desk still captures the window, so the full-screen condition is a no-op.
 - **Stop is a button only.** There is no global kill hotkey yet.
 - **The executor supports Anthropic only.** The OpenAI planner and scorer path
   is untested.

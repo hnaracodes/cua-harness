@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 from dataclasses import dataclass, field
 from typing import Any
@@ -65,6 +66,9 @@ class RunBody(BaseModel):
 
 @dataclass
 class ActiveRun:
+    """One per task. Registered synchronously by POST /run before its first await, so a
+    concurrent /run (or a forced re-plan) sees the slot taken. `run_id` is empty while
+    the run is still being validated and preflighted."""
     run_id: str
     stop: asyncio.Event
     task: asyncio.Task | None = None
@@ -87,6 +91,10 @@ def _validate_boundary(b: BoundaryBody) -> str | None:
     for p in b.polygon:
         if len(p) != 2:
             return "polygon points must be [x, y]"
+        # NaN/Infinity would make the ray cast approve arbitrary steps and poison
+        # GET /task (JSON cannot encode them). The grid is normalized 0..1.
+        if not all(math.isfinite(v) and 0.0 <= v <= 1.0 for v in p):
+            return "polygon coordinates must be finite numbers in [0, 1]"
     return None
 
 
@@ -337,7 +345,32 @@ def create_app(settings: Settings) -> FastAPI:
             return err(404, "task not found", task_id=task_id)
         if task_id in st.active_runs:
             return err(409, "a run is already in progress for this task",
-                       run_id=st.active_runs[task_id].run_id)
+                       run_id=st.active_runs[task_id].run_id or None)
+        lock = st.plan_locks.get(task_id)
+        if lock is not None and lock.locked():
+            return err(409, "a plan is being generated for this task")
+        # Reserve the slot BEFORE any await. Without this two concurrent /run calls both
+        # pass the check above while the live preflight yields, the second overwrites
+        # the first, and /stop can only reach one of them.
+        active = ActiveRun(run_id="", stop=asyncio.Event())
+        st.active_runs[task_id] = active
+        try:
+            return await _start_run(task_id, task, body, active)
+        finally:
+            if active.task is None and st.active_runs.get(task_id) is active:
+                del st.active_runs[task_id]
+
+    async def _start_run(task_id: str, task: dict, body: RunBody, active: ActiveRun):
+        if settings.exec_mode == "live":
+            # Preflight first: a 503 must leave no trace (no boundary writes, no run row).
+            cua_ok, cua_word, cua_detail = await cua_driver_status(force=True)
+            if not cua_ok:
+                return err(503, f"live executor unavailable: cua-driver {cua_word}. Nothing ran. "
+                                "Grant CuaDriver Accessibility and Screen Recording, or start "
+                                "the daemon with --exec simulated.", detail=cua_detail)
+
+        # From here to create_task below there is no await: the stored plan, removals and
+        # boundaries cannot change under the classification.
         steps = store.get_steps(task_id)
         if not steps:
             return err(409, "task has no plan yet")
@@ -346,6 +379,17 @@ def create_app(settings: Settings) -> FastAPI:
                    | set(body.approved_step_ids)) - ids
         if unknown:
             return err(400, "unknown step ids", unknown=sorted(unknown))
+
+        # The daemon owns removals. A step whose stored status is `removed` (latest
+        # decision was remove, or an earlier run excluded it) stays removed until a
+        # POST /decision restore, whatever a stale client sends.
+        stored_removed = {s["id"] for s in steps if s["status"] == "removed"}
+        missing = sorted(stored_removed - set(body.removed_step_ids))
+        if missing:
+            return err(409, "steps removed by an earlier decision are missing from "
+                            "removed_step_ids (POST /decision restore to bring one back)",
+                       removed=missing)
+        removed_ids = stored_removed | set(body.removed_step_ids)
 
         if body.boundaries is not None:
             for b in body.boundaries:
@@ -360,7 +404,7 @@ def create_app(settings: Settings) -> FastAPI:
 
         positions = store.positions_by_step(task_id)
         statuses = approval.classify([s["id"] for s in steps], positions,
-                                     body.checked_step_ids, body.removed_step_ids, boundaries)
+                                     body.checked_step_ids, removed_ids, boundaries)
         expected = sorted(approval.approved_set(statuses))
         got = sorted(set(body.approved_step_ids))
         pending = sorted(sid for sid, s in statuses.items() if s == "pending")
@@ -378,18 +422,12 @@ def create_app(settings: Settings) -> FastAPI:
             for b in boundaries:
                 store.put_boundary(task_id, b["x_dim"], b["y_dim"], b["polygon"])
 
-        if settings.exec_mode == "live":
-            cua_ok, cua_word, cua_detail = await cua_driver_status(force=True)
-            if not cua_ok:
-                return err(503, f"live executor unavailable: cua-driver {cua_word}. Nothing ran. "
-                                "Grant CuaDriver Accessibility and Screen Recording, or start "
-                                "the daemon with --exec simulated.", detail=cua_detail)
-
         removed_steps = [s for s in steps if statuses[s["id"]] == "removed"]
         approved_steps = [s for s in steps if statuses[s["id"]] == "approved"]
         approved_ids = frozenset(s["id"] for s in approved_steps)
         run_id = store.create_run(task_id, settings.exec_mode, sorted(approved_ids),
                                   [s["id"] for s in removed_steps], boundaries)
+        active.run_id = run_id
 
         checked = set(body.checked_step_ids)
         for s in steps:
@@ -403,32 +441,24 @@ def create_app(settings: Settings) -> FastAPI:
                 store.add_decision(task_id, s["id"], "approve", src, snap, run_id)
             store.set_step_status(s["id"], statuses[s["id"]])
 
-        await bus.emit(task_id, run_id, "consideration_scored", {
-            "step_count": len(steps), "dimension_count": len(DIMENSION_KEYS),
-            "approved_count": len(approved_steps)})
-        for s in removed_steps:
-            await bus.emit(task_id, run_id, "step_removed",
-                           {"step_id": s["id"], "index": s["index"], "title": s["title"]})
-
         exec_steps = [executor.ExecStep(id=s["id"], index=s["index"], title=s["title"],
                                         description=s["description"]) for s in approved_steps]
         # Defence in depth: the executor asserts this too.
         assert all(e.id in approved_ids for e in exec_steps)
 
-        stop = asyncio.Event()
-        active = ActiveRun(run_id=run_id, stop=stop)
-        st.active_runs[task_id] = active
         config = executor.ExecConfig(
             mode=settings.exec_mode, provider=settings.provider,
             # The executor has its own default (claude-opus-5-5); OVERSIGHT_EXEC_MODEL overrides.
             model=os.environ.get("OVERSIGHT_EXEC_MODEL") or executor.DEFAULT_MODEL)
         active.task = asyncio.create_task(
-            _drive(task_id, run_id, task["prompt"], exec_steps, approved_ids, stop, config))
+            _drive(task_id, active, task["prompt"], exec_steps, approved_ids, config,
+                   removed_steps, len(steps)))
         return {"run_id": run_id}
 
-    async def _drive(task_id: str, run_id: str, prompt: str, exec_steps: list,
-                     approved_ids: frozenset[str], stop: asyncio.Event,
-                     config: Any) -> None:
+    async def _drive(task_id: str, active: ActiveRun, prompt: str, exec_steps: list,
+                     approved_ids: frozenset[str], config: Any, removed_steps: list[dict],
+                     step_count: int) -> None:
+        run_id, stop = active.run_id, active.stop
         saw_final: dict | None = None
 
         async def emit(kind: str, payload: dict) -> None:
@@ -449,6 +479,12 @@ def create_app(settings: Settings) -> FastAPI:
             await bus.emit(task_id, run_id, kind, payload)
 
         try:
+            await bus.emit(task_id, run_id, "consideration_scored", {
+                "step_count": step_count, "dimension_count": len(DIMENSION_KEYS),
+                "approved_count": len(exec_steps)})
+            for s in removed_steps:
+                await bus.emit(task_id, run_id, "step_removed",
+                               {"step_id": s["id"], "index": s["index"], "title": s["title"]})
             result = await executor.run_steps(prompt, exec_steps, approved_ids, emit, stop,
                                               config)
             if saw_final is None:
@@ -474,7 +510,9 @@ def create_app(settings: Settings) -> FastAPI:
             await bus.emit(task_id, run_id, "final_result", saw_final)
         finally:
             store.finish_run(run_id, (saw_final or {}).get("status", "failed"), saw_final or {})
-            st.active_runs.pop(task_id, None)
+            # Only release our own slot: a later run's entry must stay stoppable.
+            if st.active_runs.get(task_id) is active:
+                del st.active_runs[task_id]
 
     @app.post("/task/{task_id}/stop")
     async def stop_run(task_id: str):
@@ -483,8 +521,8 @@ def create_app(settings: Settings) -> FastAPI:
         active = st.active_runs.get(task_id)
         if active is None:
             return {"stopped": False, "message": "no run in progress"}
-        active.stop.set()
-        return {"stopped": True, "run_id": active.run_id}
+        active.stop.set()  # also reaches a run still in preflight: it starts already stopped
+        return {"stopped": True, "run_id": active.run_id or None}
 
     # ------------------------------------------------------------ events (SSE)
 

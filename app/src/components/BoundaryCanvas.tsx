@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { flushSync } from "react-dom";
 import type { Dimension, Point, Step, StepStatus } from "../api/types";
 import { rawPoint, type ScoreIndex } from "../lib/approval";
-import { clampPoint, jitterFor, pointInPolygon, projectOnSegment, simplifyClosedStroke } from "../lib/geometry";
+import { clampPoint, jitterFor, pointInPolygon, projectOnSegment, simplifyStrokePreserving } from "../lib/geometry";
 import { glyphPaths } from "./Glyph";
 
 // The boundary gesture. SVG + pointer events + custom hit testing.
@@ -17,6 +17,10 @@ const HANDLE_HIT = 14; // generous grab radius
 const EDGE_HIT = 9;
 const BADGE_HIT = BADGE_R + 2;
 const DRAG_THRESHOLD = 3;
+// Collision spread never moves a badge more than this far from its true point,
+// so the true point always lies well inside the visible badge disk: a loop that
+// encloses the badge you see encloses the point that classification tests.
+const SPREAD_CAP = BADGE_R - 4;
 
 const M = { left: 40, right: 14, top: 14, bottom: 38 };
 
@@ -92,9 +96,9 @@ export const BoundaryCanvas = memo(function BoundaryCanvas(props: Props) {
   // Badge layout: RAW position + cosmetic jitter for display only.
   // `anchor` is the true point (what classification uses). When several steps
   // share nearly the same scores their badges would stack into one, so badges
-  // that collide are pushed apart deterministically and a leader line ties
-  // each displaced badge back to its true point. Display only: the approval
-  // test never reads `px`.
+  // that collide are pushed apart deterministically, but never more than
+  // SPREAD_CAP px from their anchor, and a dot on the badge marks the anchor.
+  // Display only: the approval test never reads `px`.
   const badges = useMemo(() => {
     const out: { step: Step; raw: Point; anchor: Point; px: Point }[] = [];
     for (const s of steps) {
@@ -106,8 +110,10 @@ export const BoundaryCanvas = memo(function BoundaryCanvas(props: Props) {
       out.push({ step: s, raw, anchor, px: toPx(shown) });
     }
     const minD = 2 * BADGE_R + 3;
-    const lo: Point = [M.left + BADGE_R, M.top + BADGE_R];
-    const hi: Point = [M.left + pw - BADGE_R, M.top + ph - BADGE_R];
+    // Keep badges on the SVG. This box contains every anchor, so clamping to it
+    // never moves a badge farther from its anchor than the cap already allows.
+    const lo: Point = [BADGE_R, BADGE_R];
+    const hi: Point = [M.left + pw + M.right - BADGE_R, M.top + ph + M.bottom - BADGE_R];
     const pos = out.map((b) => [b.px[0], b.px[1]] as Point);
     for (let iter = 0; iter < 60; iter++) {
       let moved = false;
@@ -128,10 +134,16 @@ export const BoundaryCanvas = memo(function BoundaryCanvas(props: Props) {
           moved = true;
         }
       }
-      for (const p of pos) {
+      pos.forEach((p, i) => {
+        const [ax, ay] = out[i].anchor;
+        const d = Math.hypot(p[0] - ax, p[1] - ay);
+        if (d > SPREAD_CAP) {
+          p[0] = ax + ((p[0] - ax) * SPREAD_CAP) / d;
+          p[1] = ay + ((p[1] - ay) * SPREAD_CAP) / d;
+        }
         p[0] = Math.min(hi[0], Math.max(lo[0], p[0]));
         p[1] = Math.min(hi[1], Math.max(lo[1], p[1]));
-      }
+      });
       if (!moved) break;
     }
     out.forEach((b, i) => { b.px = pos[i]; });
@@ -299,8 +311,10 @@ export const BoundaryCanvas = memo(function BoundaryCanvas(props: Props) {
     if (m.kind === "draw") {
       setStroke(null);
       if (cancelled) return emit(m.prev, true);
-      const strokePx = m.stroke.map(toPx);
-      const poly = simplifyClosedStroke(strokePx, 6, 10).map((q) => clampPoint(toNorm(q)));
+      // Simplify to a few handles, but never change which steps the stroke
+      // enclosed: the colours the user saw while drawing are the ones that stay.
+      const probes = badges.map((b) => b.raw);
+      const poly = simplifyStrokePreserving(m.stroke, m.stroke.map(toPx), probes, probes.map(toPx), 6, 10);
       // Reject scribbles too small to be a deliberate region.
       const area = Math.abs(polyArea(poly.map(toPx)));
       if (poly.length < 3 || area < 180) return emit(m.prev, true);
@@ -435,18 +449,6 @@ export const BoundaryCanvas = memo(function BoundaryCanvas(props: Props) {
           </>
         ) : null}
 
-        {/* leader lines: true point -> displaced badge */}
-        <g className="badge-leaders" pointerEvents="none">
-          {badges.map(({ step, anchor, px }) =>
-            Math.hypot(px[0] - anchor[0], px[1] - anchor[1]) > BADGE_R * 0.6 ? (
-              <g key={step.id}>
-                <line x1={anchor[0]} y1={anchor[1]} x2={px[0]} y2={px[1]} className="badge-leader" />
-                <circle cx={anchor[0]} cy={anchor[1]} r={2.6} className={`badge-anchor badge-anchor-${status[step.id] ?? "pending"}`} />
-              </g>
-            ) : null,
-          )}
-        </g>
-
         {/* badges */}
         <g>
           {badges.map(({ step, px }) => {
@@ -483,6 +485,15 @@ export const BoundaryCanvas = memo(function BoundaryCanvas(props: Props) {
               </g>
             );
           })}
+        </g>
+
+        {/* true points of spread badges: always under their own badge disk */}
+        <g pointerEvents="none">
+          {badges.map(({ step, anchor, px }) =>
+            Math.hypot(px[0] - anchor[0], px[1] - anchor[1]) > 2 ? (
+              <circle key={step.id} cx={anchor[0]} cy={anchor[1]} r={2.4} className="badge-anchor" data-testid={`anchor-${step.index}`} />
+            ) : null,
+          )}
         </g>
 
         {/* handles on top so they always win the grab */}
