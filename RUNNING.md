@@ -78,8 +78,8 @@ uv run oversight-daemon --fixtures
 # plan. The safe demo when cua-driver is not granted.
 uv run oversight-daemon --exec simulated
 
-# Real planner and scorer with the live executor (cua-driver drives the agent's
-# own Chrome). This needs the permissions above.
+# Real planner and scorer with the live executor (cua-driver launches and drives
+# a separate agent Chrome with its own isolated profile). Needs the permissions above.
 uv run oversight-daemon
 ```
 
@@ -237,7 +237,7 @@ live mode it drives the real desktop.
 | Daemon log | stdout of `uv run oversight-daemon`. Redirect it if you want a file. |
 | Per-call cost and latency | the `llm_calls` table, `GET /task/{id}` (`llm_calls`, `cost_usd`), and `/health` (`cost_usd_total` since start, `cost_usd_all_time`) |
 | Dimension definitions (scorer and UI tooltips) | `daemon/oversight/dimensions.yaml`, served at `GET /dimensions` |
-| Agent Chrome profile | `.agent-desk/chrome-profile/` (gitignored) |
+| Agent Chrome profile | `~/Library/Application Support/CuaDriver/BrowserProfiles/oversight-agent/` (owned by cua-driver, never your profile). The old window desk used `.agent-desk/chrome-profile/` |
 | Executor smoke gate screenshot | `.agent-desk/smoke.png`, from `uv run daemon/scripts/exec_smoke.py` |
 | Live run ledger | `LIVE_RUNS.log` (gitignored, max 3 lines) |
 | Things that need a human | `BLOCKERS.md` |
@@ -260,9 +260,20 @@ model sees the last 3; older ones are pruned. They are not written to disk.
   end-to-end check so far used the simulated executor. `LIVE_RUNS.log` has 0
   of 3 runs used. In live mode the daemon reports `cua_driver: false` and
   refuses runs with 503 until the grants exist.
-- **Chrome's omnibox and background AX typing are unverified.** If typing into
-  the address bar fails live, the next fallback is cua-driver's `browser_*`
-  CDP tools (see the executor notes).
+- **The agent has no Return key and no scrolling.** Chrome ignores background
+  (synthetic) key events, and the only key route that reaches it is a global
+  foreground keypress, which can land in your own Chrome. So the executor uses
+  cua-driver's browser tools on a separate agent Chrome: it opens URLs, types,
+  and submits forms by clicking their buttons (in-page DOM events). It reads
+  the page in and near the viewport and opens links to go deeper.
+- **Google blocks the agent browser.** A DevTools-controlled Chrome gets
+  Google's "unusual traffic" page, so the agent searches through Bing Shopping
+  or DuckDuckGo URLs.
+- **First launch of the agent browser takes focus once.** macOS activates a
+  newly launched app; the desk records your front app and gives focus back.
+  Later runs reuse the open agent browser and never take focus.
+- **The cursor check in `exec_smoke.py` fails if you move the mouse** during
+  the run. Nothing in the browser path moves the OS cursor.
 - **The UI cannot open a saved task.** Replay is API-only (section 5). In the
   UI, Generate plan always makes a new planner call. Scorer calls are cached
   only when a step's task, title and description match exactly.
