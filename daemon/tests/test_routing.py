@@ -70,9 +70,19 @@ def test_real_plans_route_with_full_step_text() -> None:
     assert seen == 3
 
 
-def test_app_desk_refuses_a_minimized_window() -> None:
-    """Real Notes state on 2026-10-02: the only titled window is off screen."""
+def test_app_desk_refuses_a_minimized_window(monkeypatch) -> None:
+    """Real Notes state on 2026-10-02: the only titled window is off screen,
+    and it stays that way through the whole recovery ladder."""
     import json
+
+    from oversight import host_desk
+
+    async def fake_run(*argv, timeout=15.0):
+        return 0, "", ""
+
+    monkeypatch.setattr(host_desk, "_run", fake_run)
+    for k in ("LAUNCH_POLL_S", "REOPEN_POLL_S", "MENU_POLL_S", "POLL_EVERY_S"):
+        monkeypatch.setattr(host_desk.AppDesk, k, 0.0)
 
     import pytest
 
@@ -92,6 +102,8 @@ def test_app_desk_refuses_a_minimized_window() -> None:
             return 0, json.dumps({"pid": 701, "bundle_id": "com.apple.Notes"}), ""
         if tool == "list_windows":
             return 0, json.dumps(wins), ""
+        if tool == "invoke_menu":
+            return 1, "", "menu item not found"
         raise AssertionError(f"unexpected {tool}")
 
     desk = AppDesk(CuaDriver(binary="cua-driver", runner=runner), *NOTES_APP)
