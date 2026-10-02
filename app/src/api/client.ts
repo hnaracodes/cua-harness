@@ -5,6 +5,7 @@
 
 import { HttpError } from "./errors";
 import { createMockDaemon } from "./mock";
+import { daemonStatus, isTauri, pollUntil } from "../lib/tauri";
 import {
   EVENT_KINDS,
   type AppSettings,
@@ -62,6 +63,8 @@ export interface DaemonApi {
 
 export const DAEMON_URL: string = (import.meta.env.VITE_DAEMON_URL as string | undefined)?.replace(/\/$/, "") || "http://127.0.0.1:8765";
 const FORCE_MOCK = import.meta.env.VITE_MOCK === "1" || new URLSearchParams(location.search).has("mock");
+/** Desktop only: how long to wait for the supervised daemon (> Rust's 60 s readiness timeout). */
+export const TAURI_CONNECT_TIMEOUT_MS = 120_000;
 
 async function request<T>(base: string, path: string, init?: RequestInit & { timeoutMs?: number }): Promise<T> {
   const ctl = new AbortController();
@@ -181,13 +184,28 @@ export function createHttpDaemon(base: string): DaemonApi {
   };
 }
 
-/** Decide once at startup: the real daemon if it answers /health, else the mock. */
+/** Decide once at startup.
+ *  Browser: the real daemon if it answers /health, else the mock (unchanged).
+ *  Desktop app: NEVER the mock. Wait while the shell's supervisor is starting or
+ *  restarting the daemon (up to 120 s, which covers a first-launch `uv sync`). If it reports
+ *  `failed` or the wait times out, still return the HTTP daemon, so conn.reachable
+ *  goes false and Splash/HealthPill show "won't start" + the log tail (track U1). */
 export async function connectDaemon(): Promise<DaemonApi> {
   if (FORCE_MOCK) return createMockDaemon();
-  try {
-    await request<Health>(DAEMON_URL, "/health", { timeoutMs: 1500 });
+  const probe = async () => {
+    try {
+      await request<Health>(DAEMON_URL, "/health", { timeoutMs: 1500 });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  if (isTauri()) {
+    await pollUntil(
+      async () => (await probe()) || (await daemonStatus())?.state === "failed",
+      { intervalMs: 500, timeoutMs: TAURI_CONNECT_TIMEOUT_MS },
+    );
     return createHttpDaemon(DAEMON_URL);
-  } catch {
-    return createMockDaemon();
   }
+  return (await probe()) ? createHttpDaemon(DAEMON_URL) : createMockDaemon();
 }
