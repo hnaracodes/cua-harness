@@ -1,0 +1,21 @@
+# local toolchains, worktrees, runtime state
+.toolchain/
+.worktrees/
+.agent-desk/
+LIVE_RUNS.log
+.env
+.env.*
+!.env.example
+# python
+__pycache__/
+*.pyc
+.venv/
+daemon/.data/
+.pytest_cache/
+.ruff_cache/
+# node / tauri
+node_modules/
+dist/
+app/src-tauri/target/
+app/src-tauri/gen/
+.DS_Store
