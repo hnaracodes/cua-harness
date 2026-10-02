@@ -261,7 +261,18 @@ class CuaDriver:
         self.calls.append((tool, args))
         argv = [self.binary, "call", tool, json.dumps(args)]
         code, out, err = await self._runner(argv)
-        return parse_call_output(tool, out, err, code)
+        try:
+            return parse_call_output(tool, out, err, code)
+        except CuaDriverError as e:
+            # cua-driver can end a named session (idle, restart, cleanup) and then
+            # rejects every call with that label; ordinary calls never revive it.
+            # Revive it with start_session once and retry this call once.
+            if tool == "start_session" or "session has ended" not in str(e) or "session" not in args:
+                raise
+            await self._runner([self.binary, "call", "start_session",
+                                json.dumps({"session": args["session"]})])
+            code, out, err = await self._runner(argv)
+            return parse_call_output(tool, out, err, code)
 
     # -- status ------------------------------------------------------------
     async def daemon_running(self) -> bool:

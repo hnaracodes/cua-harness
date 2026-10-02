@@ -471,3 +471,37 @@ def test_render_ax_prunes_and_indexes() -> None:
     txt = render_ax(els, 10_000)
     assert "[1]" not in txt and "[2] textfield" in txt and "[3] link" in txt and "$89.99" in txt
     assert "tok" not in txt
+
+
+def test_driver_revives_an_ended_session_once_and_retries() -> None:
+    """cua-driver ends a named session (idle, restart, cleanup) and then
+    rejects every call with that label until start_session revives it. The
+    wrapper revives it once and retries; it does not loop."""
+    ended = ("session has ended; tool call 'get_cursor_position' was rejected. Call start_session "
+             "with session 'oversight-agent' to start it again, or use a new session label.")
+    state = {"alive": False}
+    seen: list[str] = []
+
+    async def runner(argv: list[str]) -> tuple[int, str, str]:
+        tool = argv[2]
+        seen.append(tool)
+        if tool == "start_session":
+            state["alive"] = True
+            return 0, json.dumps({"active": True, "revived": True, "session": "oversight-agent"}), ""
+        if not state["alive"]:
+            return 1, ended, ""
+        return 0, json.dumps({"x": 5, "y": 7}), ""
+
+    driver = CuaDriver(binary="cua-driver", runner=runner)
+    assert run(driver.cursor_position()) == (5.0, 7.0)
+    assert seen == ["get_cursor_position", "start_session", "get_cursor_position"]
+
+    async def always_ended(argv: list[str]) -> tuple[int, str, str]:
+        seen.append(argv[2])
+        return (0, json.dumps({"active": True}), "") if argv[2] == "start_session" else (1, ended, "")
+
+    seen.clear()
+    driver = CuaDriver(binary="cua-driver", runner=always_ended)
+    with pytest.raises(Exception, match="session has ended"):
+        run(driver.call("list_windows", {"pid": 1}))
+    assert seen == ["list_windows", "start_session", "list_windows"]
