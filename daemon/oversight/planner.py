@@ -51,6 +51,11 @@ each step on its own. So:
 - glyph: pick from {", ".join(GLYPHS)}.
 Respond with the JSON object only."""
 
+IMAGES_NOTE = ("\nThe user attached one or more images with the task. Treat them as context the "
+               "user provided (for example a product, a form, or a screenshot to work from). "
+               "Plan only the actions the task asks for; never plan to upload or forward the "
+               "images unless the task says to.")
+
 
 @dataclass
 class PlannedStep:
@@ -83,10 +88,11 @@ async def plan_task(llm: StructuredLLM, prompt: str, selected_app: str | None,
     user = f"Task: {prompt}"
     if selected_app:
         user += f"\nSelected app: {selected_app}"
+    system = SYSTEM + IMAGES_NOTE if images else SYSTEM
     last: Exception | None = None
     for _attempt in range(2):
         try:
-            data, rec = await llm.call(scope="plan", system=SYSTEM, user=user,
+            data, rec = await llm.call(scope="plan", system=system, user=user,
                                        schema=PLAN_SCHEMA, schema_name="plan",
                                        effort="medium", max_tokens=8000, images=images)
         except LLMError as e:
@@ -103,4 +109,4 @@ async def plan_task(llm: StructuredLLM, prompt: str, selected_app: str | None,
     raise LLMError(f"planner failed: {last}")
 
 
-__all__ = ["GLYPHS", "PlannedStep", "plan_task", "validate_plan", "CallRecord"]
+__all__ = ["GLYPHS", "IMAGES_NOTE", "PlannedStep", "plan_task", "validate_plan", "CallRecord"]
