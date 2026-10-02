@@ -107,6 +107,220 @@ pub fn default_daemon_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("..").join("daemon")
 }
 
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{SocketAddr, TcpStream};
+use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Instant;
+
+pub fn health_ok(addr: &str, timeout: Duration) -> bool {
+    let Ok(sock) = addr.parse::<SocketAddr>() else { return false };
+    let Ok(mut s) = TcpStream::connect_timeout(&sock, timeout) else { return false };
+    let _ = s.set_read_timeout(Some(timeout));
+    let _ = s.set_write_timeout(Some(timeout));
+    if s.write_all(b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").is_err() {
+        return false;
+    }
+    let mut buf = [0u8; 32];
+    let n = s.read(&mut buf).unwrap_or(0);
+    is_http_ok(&buf[..n])
+}
+
+/// `OVERSIGHT_DAEMON_CMD` wins; else `uv run oversight-daemon` in appdev/daemon.
+pub fn daemon_command() -> ((String, Vec<String>), PathBuf) {
+    let cmd = std::env::var("OVERSIGHT_DAEMON_CMD").ok().and_then(|s| parse_command(&s));
+    (cmd.unwrap_or_else(|| ("uv".into(), vec!["run".into(), "oversight-daemon".into()])), default_daemon_dir())
+}
+
+struct Inner {
+    status: SupervisorStatus,
+    log: LogRing,
+    child: Option<Child>,
+    stopping: bool,
+}
+
+#[derive(Clone)]
+pub struct Supervisor {
+    inner: Arc<Mutex<Inner>>,
+}
+
+impl Supervisor {
+    pub fn start() -> Self {
+        let (cmd, cwd) = daemon_command();
+        Self::start_with(cmd, cwd)
+    }
+
+    pub fn start_with(cmd: (String, Vec<String>), cwd: PathBuf) -> Self {
+        let inner = Arc::new(Mutex::new(Inner {
+            status: SupervisorStatus { state: DaemonState::Starting, restarts: 0, last_error: None },
+            log: LogRing::new(LOG_CAPACITY),
+            child: None,
+            stopping: false,
+        }));
+        let me = Self { inner: inner.clone() };
+        thread::spawn(move || run_loop(inner, cmd, cwd));
+        me
+    }
+
+    pub fn status(&self) -> SupervisorStatus {
+        self.inner.lock().unwrap().status.clone()
+    }
+
+    pub fn log_tail(&self, n: usize) -> String {
+        self.inner.lock().unwrap().log.tail(n)
+    }
+
+    /// App quit: stop restarting and take the daemon (and uv's child python) down.
+    pub fn shutdown(&self) {
+        let mut g = self.inner.lock().unwrap();
+        g.stopping = true;
+        if let Some(mut child) = g.child.take() {
+            terminate(&mut child);
+        }
+    }
+}
+
+fn note(inner: &Arc<Mutex<Inner>>, line: impl Into<String>) {
+    inner.lock().unwrap().log.push(line);
+}
+
+fn set_state(inner: &Arc<Mutex<Inner>>, state: DaemonState, err: Option<String>) {
+    let mut g = inner.lock().unwrap();
+    g.status.state = state;
+    if err.is_some() {
+        g.status.last_error = err;
+    }
+}
+
+fn pump(inner: Arc<Mutex<Inner>>, src: impl Read + Send + 'static, tag: &'static str) {
+    thread::spawn(move || {
+        for line in BufReader::new(src).lines().map_while(Result::ok) {
+            inner.lock().unwrap().log.push(format!("[{tag}] {line}"));
+        }
+    });
+}
+
+fn spawn_child(inner: &Arc<Mutex<Inner>>, cmd: &(String, Vec<String>), cwd: &PathBuf) -> std::io::Result<()> {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let mut c = Command::new(&cmd.0);
+    c.args(&cmd.1)
+        .current_dir(cwd)
+        .env("PATH", augment_path(&std::env::var("PATH").unwrap_or_default(), &home))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        c.process_group(0); // own group: quitting kills uv AND the python it started
+    }
+    let mut child = c.spawn()?;
+    if let Some(o) = child.stdout.take() {
+        pump(inner.clone(), o, "out");
+    }
+    if let Some(e) = child.stderr.take() {
+        pump(inner.clone(), e, "err");
+    }
+    note(inner, format!("spawned `{} {}` (pid {}) in {}", cmd.0, cmd.1.join(" "), child.id(), cwd.display()));
+    inner.lock().unwrap().child = Some(child);
+    Ok(())
+}
+
+fn terminate(child: &mut Child) {
+    #[cfg(unix)]
+    {
+        // SIGTERM to the whole group so `uv run` forwards it and python exits cleanly.
+        let _ = Command::new("kill").args(["-TERM", &format!("-{}", child.id())]).status();
+        for _ in 0..30 {
+            if matches!(child.try_wait(), Ok(Some(_))) {
+                return;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+fn run_loop(inner: Arc<Mutex<Inner>>, cmd: (String, Vec<String>), cwd: PathBuf) {
+    if health_ok(HEALTH_ADDR, Duration::from_millis(500)) {
+        note(&inner, "a daemon already answers on 127.0.0.1:8765; using it, not spawning one");
+        set_state(&inner, DaemonState::External, None);
+        return;
+    }
+    let mut policy = Policy::default();
+    loop {
+        if inner.lock().unwrap().stopping {
+            return;
+        }
+        let started = Instant::now();
+        if let Err(e) = spawn_child(&inner, &cmd, &cwd) {
+            note(&inner, format!("spawn failed: {e}"));
+            inner.lock().unwrap().status.last_error = Some(format!("spawn failed: {e}"));
+        } else {
+            // Wait for readiness, then for exit.
+            loop {
+                thread::sleep(Duration::from_millis(250));
+                let mut g = inner.lock().unwrap();
+                if g.stopping {
+                    return;
+                }
+                let exited = match g.child.as_mut() {
+                    Some(c) => match c.try_wait() {
+                        Ok(Some(code)) => Some(format!("daemon exited ({code})")),
+                        Ok(None) => None,
+                        Err(e) => Some(format!("daemon wait failed: {e}")),
+                    },
+                    None => Some("daemon exited".into()),
+                };
+                if let Some(why) = exited {
+                    g.child = None;
+                    g.log.push(why.clone());
+                    g.status.last_error = Some(why);
+                    break;
+                }
+                let state = g.status.state;
+                drop(g);
+                if state != DaemonState::Running {
+                    if health_ok(HEALTH_ADDR, Duration::from_millis(400)) {
+                        note(&inner, "daemon healthy");
+                        set_state(&inner, DaemonState::Running, None);
+                    } else if started.elapsed() > READY_TIMEOUT {
+                        note(&inner, "daemon not healthy after 60 s; restarting it");
+                        // Take the child in its own statement so the lock is released before
+                        // terminate() (which can wait up to 3 s) and before we lock again.
+                        let child = inner.lock().unwrap().child.take();
+                        if let Some(mut c) = child {
+                            terminate(&mut c);
+                        }
+                        inner.lock().unwrap().status.last_error = Some("not healthy within 60 s".into());
+                        break;
+                    }
+                }
+            }
+        }
+        match policy.on_exit(started.elapsed()) {
+            Next::RestartAfter(d) => {
+                {
+                    let mut g = inner.lock().unwrap();
+                    g.status.state = DaemonState::Restarting;
+                    g.status.restarts += 1;
+                }
+                note(&inner, format!("restarting in {} s", d.as_secs()));
+                thread::sleep(d);
+            }
+            Next::GiveUp => {
+                let last = inner.lock().unwrap().status.last_error.clone().unwrap_or_default();
+                set_state(&inner, DaemonState::Failed,
+                          Some(format!("The daemon won't start (last: {last}). See the log.")));
+                note(&inner, "giving up after 3 restarts");
+                return;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,5 +388,24 @@ mod tests {
     #[test]
     fn default_daemon_dir_points_at_appdev_daemon() {
         assert!(default_daemon_dir().join("pyproject.toml").is_file());
+    }
+
+    #[test]
+    fn supervisor_gives_up_on_a_command_that_always_exits() {
+        // `false` exits immediately: three backoff restarts (1+2+4 s), then failed.
+        // Only meaningful when nothing listens on :8765 (otherwise state is external).
+        if health_ok(HEALTH_ADDR, Duration::from_millis(300)) {
+            return;
+        }
+        let sup = Supervisor::start_with(("false".into(), vec![]), std::env::temp_dir());
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        while sup.status().state != DaemonState::Failed && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let s = sup.status();
+        assert_eq!(s.state, DaemonState::Failed);
+        assert_eq!(s.restarts, 3);
+        assert!(s.last_error.unwrap_or_default().contains("won't start"));
+        assert!(sup.log_tail(50).contains("exited"));
     }
 }
