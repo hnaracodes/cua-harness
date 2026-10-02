@@ -40,6 +40,13 @@ from typing import Any
 FULL_SCREEN_TOOLS = frozenset({"get_desktop_state"})
 #: Tools that raise a window or steal focus. Always refused.
 FOREGROUND_TOOLS = frozenset({"bring_to_front"})
+#: Browser tools the agent never needs: files, downloads, the clipboard, page
+#: dialogs and the legacy catch-all. Always refused.
+BROWSER_DENIED = frozenset({"browser_download", "browser_set_input_files", "browser_dialog",
+                            "clipboard_write", "page"})
+#: Browser tools that must use the in-page ``dom_event`` route. The trusted CDP
+#: Input route activates Chromium's window on macOS.
+BROWSER_DOM_ONLY = frozenset({"browser_click", "browser_pointer"})
 
 #: Tools whose schema accepts the ``session`` label.
 _NO_SESSION_TOOLS = frozenset({"check_permissions", "check_for_update", "get_config", "set_config"})
@@ -139,6 +146,11 @@ def parse_call_output(tool: str, stdout: str, stderr: str, exit_code: int) -> di
             if isinstance(msg, dict):
                 msg = json.dumps(msg)
             raise CuaDriverError(tool, str(msg), merged.get("code") or _first_line_code(str(msg)), exit_code)
+        if merged.get("effect") == "refused" or merged.get("status") == "refused":
+            e = merged.get("error")
+            ecode = e.get("code") if isinstance(e, dict) else None
+            raise CuaDriverError(tool, json.dumps(e) if isinstance(e, dict) else str(e or out),
+                                 ecode or "refused", exit_code)
         return merged
 
     if exit_code != 0:
@@ -226,6 +238,20 @@ class CuaDriver:
             tgt = args.get("target")
             if isinstance(tgt, dict) and tgt.get("kind") == "desktop":
                 raise ForbiddenCall(tool, "desktop target is disabled (window-scoped only)", "forbidden")
+        if tool in BROWSER_DENIED:
+            raise ForbiddenCall(tool, "not available to the agent (files, downloads, clipboard, dialogs)",
+                                "forbidden")
+        if tool == "browser_prepare":
+            mode = (args.get("profile") or {}).get("mode")
+            if args.get("strategy") or not args.get("allow_launch") or mode not in ("isolated_new",
+                                                                                     "isolated_named"):
+                raise ForbiddenCall(tool, "only a driver-owned isolated profile; never a user browser profile",
+                                    "forbidden")
+        if tool in BROWSER_DOM_ONLY and args.get("input_route") != "dom_event":
+            raise ForbiddenCall(tool, "browser input must use input_route=dom_event (trusted input "
+                                "activates the browser window)", "forbidden")
+        if tool == "browser_type" and args.get("mode", "insert_text") != "insert_text":
+            raise ForbiddenCall(tool, "browser typing uses insert_text only", "forbidden")
 
     async def call(self, tool: str, args: dict[str, Any] | None = None) -> dict[str, Any]:
         args = dict(args or {})
@@ -451,6 +477,50 @@ class CuaDriver:
         if by:
             args["by"] = by
         return await self.call("scroll", args)
+
+
+    # -- driver-owned browser (CDP) -----------------------------------------
+    async def browser_prepare_isolated(self, profile_name: str) -> dict[str, Any]:
+        """Launch a driver-owned Chromium with an isolated named profile."""
+        return await self.call("browser_prepare", {
+            "allow_launch": True, "profile": {"mode": "isolated_named", "name": profile_name},
+        })
+
+    async def browser_state(
+        self,
+        *,
+        pid: int | None = None,
+        window_id: int | None = None,
+        target_id: str | None = None,
+        tab_id: str | None = None,
+        semantic: bool = False,
+        include_screenshot: bool = False,
+    ) -> dict[str, Any]:
+        """Bind mode with pid + window_id (returns target_id and tabs), or a
+        snapshot of one tab with target_id + tab_id (refs, optional PNG of the
+        tab viewport only)."""
+        args: dict[str, Any] = {}
+        if target_id and tab_id:
+            args.update({"target_id": target_id, "tab_id": tab_id})
+            if semantic:
+                args["snapshot_format"] = "semantic_v2"
+            if include_screenshot:
+                args["include_screenshot"] = True
+        else:
+            args.update({"pid": pid, "window_id": window_id})
+        return await self.call("get_browser_state", args)
+
+    async def browser_navigate(self, target_id: str, tab_id: str, url: str) -> dict[str, Any]:
+        return await self.call("browser_navigate", {"target_id": target_id, "tab_id": tab_id, "url": url})
+
+    async def browser_click(self, target_id: str, tab_id: str, ref: str) -> dict[str, Any]:
+        return await self.call("browser_click", {"target_id": target_id, "tab_id": tab_id, "ref": ref,
+                                                 "input_route": "dom_event"})
+
+    async def browser_type(self, target_id: str, tab_id: str, ref: str, text: str, *,
+                           replace: bool = False) -> dict[str, Any]:
+        return await self.call("browser_type", {"target_id": target_id, "tab_id": tab_id, "ref": ref,
+                                                "text": text, "replace": replace})
 
 
 def _int(v: Any) -> int | None:

@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["anthropic>=1.11"]
+# dependencies = ["anthropic>=1.11", "pillow>=10.3"]
 # ///
 """Executor gate (docs/07, session C).
 
@@ -34,6 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from oversight.cua import CuaDriver, CuaDriverError  # noqa: E402
 from oversight.executor import ExecConfig, ExecStep, open_url, run_steps  # noqa: E402
+from oversight.browser_desk import BrowserDesk, frontmost_bundle_id  # noqa: E402
 from oversight.host_desk import AgentDesk, appdev_root, frontmost_app  # noqa: E402
 
 QUERY = "tennis rackets under $100"
@@ -147,7 +148,73 @@ async def scripted(desk: AgentDesk, driver: CuaDriver, out_png: Path) -> dict:
     return report
 
 
-async def live_step1(desk: AgentDesk, driver: CuaDriver) -> dict:
+async def scripted_browser(desk: BrowserDesk, driver: CuaDriver, out_png: Path) -> dict:
+    """Browser desk gate: DuckDuckGo, type the query, click Search (DOM event),
+    results page, tab-viewport screenshot, no cursor or focus change."""
+    report: dict = {}
+    cursor0 = await driver.cursor_position()
+    front0 = await frontmost_bundle_id()
+    report["cursor_before"], report["front_before"] = cursor0, front0
+
+    t = await desk.ensure("https://duckduckgo.com/")
+    report["browser_pid"], report["window_id"] = t.pid, t.window_id
+    report["launch_restored_focus_to"] = desk.restored_focus_to
+    cursor0b = await driver.cursor_position()  # after any one-time launch
+    front0b = await frontmost_bundle_id()
+
+    box = None
+    for _ in range(20):
+        await asyncio.sleep(0.5)
+        ws = await desk.observe()
+        box = next((e for e in ws.elements if e["role"] in ("combobox", "searchbox", "textbox")), None)
+        if box:
+            break
+    if not box:
+        report["error"] = "search box not found"
+        return report
+    await desk.type(box["element_token"], QUERY, replace=True)
+    # The submit button only appears once the box holds text.
+    btn = None
+    for _ in range(10):
+        await asyncio.sleep(0.4)
+        ws = await desk.observe()
+        btn = next((e for e in ws.elements if e["role"] == "button" and str(e["label"]).lower() == "search"), None)
+        if btn:
+            break
+    if not btn:
+        report["error"] = "submit button not found after typing; buttons: " + ", ".join(
+            repr(e["label"]) for e in ws.elements if e["role"] == "button")[:400]
+        return report
+    await desk.click(btn["element_token"])
+    report["typed_into"] = f"{box['role']} {box['label']!r}, clicked {btn['label']!r} (dom event)"
+
+    title = ""
+    for _ in range(24):
+        await asyncio.sleep(0.5)
+        ws = await desk.observe(include_tree=False, max_image_dimension=0)
+        title = ws.window_title or ""
+        if "tennis" in title.lower():
+            break
+    report["tab_title"], report["url"] = title, ws.raw.get("url")
+    out_png.parent.mkdir(parents=True, exist_ok=True)
+    out_png.write_bytes(ws.png or b"")
+    w, h = png_size(ws.png or b"")
+    screen = await driver.call("get_screen_size", {})
+    sw, sh = float(screen.get("width") or 0), float(screen.get("height") or 0)
+    is_display = any(abs(w - sw * s) <= 3 and abs(h - sh * s) <= 3 for s in (1.0, 2.0))
+    report.update({"png": str(out_png), "png_size": [w, h], "screen": screen})
+    report["check_a_tab_sized"] = bool(w and h and not is_display)
+    cursor1 = await driver.cursor_position()
+    front1 = await frontmost_bundle_id()
+    report["cursor_after"], report["front_after"] = cursor1, front1
+    report["check_b_cursor_unchanged"] = cursor0b == cursor1 and cursor1 is not None
+    report["check_c_front_unchanged"] = front0b == front1 and front1 is not None
+    report["check_c_front_same_as_start"] = front0 == front1
+    report["results_page"] = "tennis" in title.lower()
+    return report
+
+
+async def live_step1(desk: AgentDesk | BrowserDesk, driver: CuaDriver) -> dict:
     log = appdev_root() / "LIVE_RUNS.log"
     used = len(log.read_text().splitlines()) if log.exists() else 0
     if used >= 3:
@@ -159,8 +226,10 @@ async def live_step1(desk: AgentDesk, driver: CuaDriver) -> dict:
         events.append((kind, payload))
         print(f"  [{kind}] {json.dumps(payload)[:220]}", flush=True)
 
+    kind = getattr(desk, "kind", "window")
     cfg = ExecConfig(mode="live", max_actions_per_run=25, max_actions_per_step=10,
-                     start_url="https://www.google.com")
+                     desk="browser" if kind == "browser" else "window",
+                     start_url="about:blank" if kind == "browser" else "https://www.google.com")
     try:
         result = await run_steps(TASK, [STEP1], frozenset({STEP1.id}), emit, asyncio.Event(), cfg,
                                  driver=driver, desk=desk)
@@ -185,6 +254,8 @@ async def main() -> int:
     ap.add_argument("--live", action="store_true", help="also run one live LLM pass of step 1")
     ap.add_argument("--simulated", action="store_true", help="only run the executor in simulated mode")
     ap.add_argument("--keep-open", action="store_true", help="leave the agent's Chrome running")
+    ap.add_argument("--desk", choices=["browser", "window"], default="browser",
+                    help="browser: cua-driver-owned Chrome over CDP (default); window: AX on our own Chrome")
     args = ap.parse_args()
 
     if args.simulated:
@@ -199,13 +270,20 @@ async def main() -> int:
         print("or run `cua-driver permissions grant`, then re-run this script. See appdev/BLOCKERS.md.")
         return 2
 
-    desk = AgentDesk(driver)
     out_png = appdev_root() / ".agent-desk" / "smoke.png"
+    if args.desk == "browser":
+        desk: AgentDesk | BrowserDesk = BrowserDesk(driver)
+        checks = ("check_a_tab_sized", "check_b_cursor_unchanged", "check_c_front_unchanged", "results_page")
+    else:
+        desk = AgentDesk(driver)
+        checks = ("check_a_window_sized", "check_b_cursor_unchanged", "check_c_front_unchanged", "results_page")
     try:
-        report = await scripted(desk, driver, out_png)
+        if isinstance(desk, BrowserDesk):
+            report = await scripted_browser(desk, driver, out_png)
+        else:
+            report = await scripted(desk, driver, out_png)
         print(json.dumps(report, indent=2, default=str))
-        passed = all(report.get(k) for k in ("check_a_window_sized", "check_b_cursor_unchanged",
-                                             "check_c_front_unchanged", "results_page"))
+        passed = all(report.get(k) for k in checks)
         print(f"SCRIPTED GATE: {'PASS' if passed else 'FAIL'}")
         if args.live and passed:
             print("LIVE RUN (step 1):")
