@@ -510,11 +510,60 @@ def create_app(settings: Settings) -> FastAPI:
     async def _drive(task_id: str, active: ActiveRun, prompt: str, exec_steps: list,
                      approved_ids: frozenset[str], config: Any, removed_steps: list[dict],
                      step_count: int) -> None:
+        from . import recap
+        from .routes.frames import save_frame_jpeg
+
         run_id, stop = active.run_id, active.stop
         saw_final: dict | None = None
+        frame_n = 0
+        results: dict[str, dict] = {}
+        removed_ids = {s["id"] for s in removed_steps}
+        recap_steps = [{"id": s["id"], "index": s["index"], "title": s["title"],
+                        "removed": s["id"] in removed_ids} for s in store.get_steps(task_id)]
+
+        async def finalize(final: dict, *, use_llm: bool) -> None:
+            """run_recap, then final_result, exactly once: the chat always ends in a summary."""
+            nonlocal saw_final
+            if saw_final is not None:
+                return
+            saw_final = final
+            rc: dict
+            try:
+                if use_llm and st.llm is not None:
+                    async def on_call(rec: CallRecord) -> None:
+                        await record_call(task_id, run_id, rec)
+
+                    rc = await recap.build_recap(st.llm, prompt, recap_steps, results, final, on_call)
+                else:
+                    rc = recap.build_fallback_recap(recap_steps, results, final)
+            except asyncio.CancelledError:
+                # Cancelled during the recap call: still end the stream, then propagate.
+                await bus.emit(task_id, run_id, "run_recap",
+                               recap.build_fallback_recap(recap_steps, results, final))
+                await bus.emit(task_id, run_id, "final_result", final)
+                raise
+            except Exception:  # never let the recap block the final result
+                log.exception("recap failed")
+                rc = recap.build_fallback_recap(recap_steps, results, final)
+            await bus.emit(task_id, run_id, "run_recap", rc)
+            await bus.emit(task_id, run_id, "final_result", final)
 
         async def emit(kind: str, payload: dict) -> None:
-            nonlocal saw_final
+            nonlocal frame_n
+            if kind == "frame":
+                png = payload.get("png")
+                if not isinstance(png, (bytes, bytearray)) or not png:
+                    return
+                frame_n += 1
+                dest = settings.data_dir / "frames" / task_id / f"{run_id}_{frame_n}.jpg"
+                try:
+                    await asyncio.to_thread(save_frame_jpeg, bytes(png), dest)
+                except Exception:
+                    log.warning("dropping an undecodable frame for task %s", task_id, exc_info=True)
+                    return
+                step_id = str(payload.get("step_id", ""))
+                seq = store.add_frame(task_id, run_id, step_id, str(dest))
+                payload = {"step_id": step_id, "seq": seq}
             if kind == "cost":
                 rec = CallRecord(
                     scope=payload.get("scope", "run"), provider=config.provider,
@@ -526,8 +575,11 @@ def create_app(settings: Settings) -> FastAPI:
                 store.add_llm_call(task_id, run_id, rec)
                 st.session_cost = round(st.session_cost + rec.usd, 6)
                 payload = {**payload, "scope": rec.scope, "usd_total": store.task_cost(task_id)}
+            if kind == "step_result":
+                results[str(payload.get("step_id"))] = payload
             if kind == "final_result":
-                saw_final = payload
+                await finalize(payload, use_llm=True)
+                return
             await bus.emit(task_id, run_id, kind, payload)
 
         try:
@@ -541,25 +593,22 @@ def create_app(settings: Settings) -> FastAPI:
                                               config)
             if saw_final is None:
                 result = result or {}
-                saw_final = {"status": result.get("status", "completed"),
-                             "message": result.get("message", "All approved steps were attempted."),
-                             "attempted": result.get("attempted", []),
-                             "completed": result.get("completed", [])}
-                await bus.emit(task_id, run_id, "final_result", saw_final)
+                await finalize({"status": result.get("status", "completed"),
+                                "message": result.get("message", "All approved steps were attempted."),
+                                "attempted": result.get("attempted", []),
+                                "completed": result.get("completed", [])}, use_llm=True)
         except executor.UnapprovedStepError as e:
-            saw_final = {"status": "failed", "message": f"Refused: {e}", "attempted": [],
-                         "completed": []}
-            await bus.emit(task_id, run_id, "final_result", saw_final)
+            await finalize({"status": "failed", "message": f"Refused: {e}", "attempted": [],
+                            "completed": []}, use_llm=False)
         except asyncio.CancelledError:
-            saw_final = {"status": "stopped", "message": "Run cancelled.", "attempted": [],
-                         "completed": []}
-            await bus.emit(task_id, run_id, "final_result", saw_final)
+            await finalize({"status": "stopped", "message": "Run cancelled.", "attempted": [],
+                            "completed": []}, use_llm=False)
             raise
         except Exception as e:
             log.exception("executor failed")
-            saw_final = {"status": "failed", "message": f"Executor error: {type(e).__name__}: {e}",
-                         "attempted": [], "completed": []}
-            await bus.emit(task_id, run_id, "final_result", saw_final)
+            await finalize({"status": "failed",
+                            "message": f"Executor error: {type(e).__name__}: {e}",
+                            "attempted": [], "completed": []}, use_llm=False)
         finally:
             store.finish_run(run_id, (saw_final or {}).get("status", "failed"), saw_final or {})
             # Only release our own slot: a later run's entry must stay stoppable.

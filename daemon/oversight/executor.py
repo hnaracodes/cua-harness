@@ -682,6 +682,10 @@ class LiveRunner:
             self.seq += 1
             turn = Turn(step_index=step.index, seq=self.seq, png=ws.png)
             rs.turns.append(turn)
+            if ws.png:
+                # The exact window-scoped capture the model is about to see. The daemon
+                # converts it to JPEG for the desk view; the bytes never enter the event log.
+                await rs.emit("frame", {"step_id": step.id, "png": ws.png})
             pixel = (force_pixel or not ws.elements) and not self.browser
             req = build_request(rs, step, ws, pixel, nudge, browser=self.browser, app=self.app)
             nudge = None
@@ -938,6 +942,7 @@ async def run_steps(
         assert_step_approved(step, approved_ids)
         rs.attempted.append(step.id)
         await emit("step_started", {"step_id": step.id, "index": step.index, "title": step.title})
+        actions_before, t_step = rs.actions_used, time.monotonic()
         try:
             outcome = await _dispatch_step(rs, step, approved_ids, runner)
         except UnapprovedStepError:
@@ -945,7 +950,9 @@ async def run_steps(
         except Exception as e:  # driver/model failure: fail this step, stop the run
             outcome = StepOutcome("failed", f"{type(e).__name__}: {e}")
         await emit("step_result", {"step_id": step.id, "index": step.index, "status": outcome.status,
-                                   "summary": outcome.summary})
+                                   "summary": outcome.summary,
+                                   "actions": rs.actions_used - actions_before,
+                                   "duration_ms": int((time.monotonic() - t_step) * 1000)})
         if outcome.status == "done":
             rs.completed.append(step.id)
             rs.step_summaries.append(f"  {step.index}. {step.title}: {outcome.summary}")
@@ -964,7 +971,8 @@ async def run_steps(
             continue
         if s.id in approved_ids:
             await emit("step_result", {"step_id": s.id, "index": s.index, "status": "skipped",
-                                       "summary": "Not run: the run ended early."})
+                                       "summary": "Not run: the run ended early.",
+                                       "actions": 0, "duration_ms": 0})
 
     all_attempted = all(s.id in rs.attempted for s in steps)
     if status == "completed" and all_attempted:
