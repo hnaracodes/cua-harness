@@ -262,3 +262,41 @@ def test_self_test_reports_driver_exceptions_instead_of_raising():
     env, _ = make_env(desk=Exploding())
     ok, detail = asyncio.run(setup.self_test(env))
     assert ok is False and "has no window" in detail
+
+
+def test_load_settings_applies_keychain_first(monkeypatch, tmp_path):
+    from oversight import settings as settings_mod
+
+    monkeypatch.setenv("OVERSIGHT_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("OVERSIGHT_NO_KEYCHAIN", raising=False)
+    monkeypatch.delenv("OVERSIGHT_PROVIDER", raising=False)
+    monkeypatch.delenv("OVERSIGHT_MODEL", raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+    monkeypatch.setattr(settings_mod, "find_env_file", lambda *a, **k: None)
+    kr = FakeKeyring()
+    kr.data[(setup.KEYCHAIN_SERVICE, "ANTHROPIC_API_KEY")] = "sk-from-keychain"
+    monkeypatch.setattr(setup, "keyring_get", kr.get)
+    s = settings_mod.load_settings(fixtures=True)
+    import os
+    assert os.environ["ANTHROPIC_API_KEY"] == "sk-from-keychain"
+    assert s.provider == "anthropic" and s.api_key_present is True
+    assert s.keychain_warning is None
+
+
+def test_load_settings_keychain_unavailable_is_a_warning_not_a_crash(monkeypatch, tmp_path):
+    from oversight import settings as settings_mod
+
+    monkeypatch.setenv("OVERSIGHT_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("OVERSIGHT_NO_KEYCHAIN", raising=False)
+    monkeypatch.setattr(settings_mod, "find_env_file", lambda *a, **k: None)
+    monkeypatch.setattr(setup, "keyring_get", FakeKeyring(broken=True).get)
+    s = settings_mod.load_settings(fixtures=True)
+    assert s.keychain_warning and "keychain" in s.keychain_warning.lower()
+
+
+def test_reset_cua_cache_clears_cached_probe():
+    from oversight import settings as settings_mod
+
+    settings_mod._CUA_CACHE["value"] = (True, "running", "ok")
+    settings_mod.reset_cua_cache()
+    assert settings_mod._CUA_CACHE["value"] is None
