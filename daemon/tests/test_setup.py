@@ -457,3 +457,49 @@ def test_put_key_switch_reuses_stored_model_for_that_provider(tmp_path):
         st.store.set_setting("model", "claude-opus-5-5")  # chosen earlier for anthropic
         assert c.put("/setup/key", json={"provider": "anthropic", "key": "k"}).json()["ok"]
         assert s.model == "claude-opus-5-5"
+
+
+def test_foreign_origin_is_refused_before_anything_runs(client):
+    """Any web page could otherwise POST to the daemon (a 'simple' cross-origin POST is
+    sent even when CORS hides the response). A foreign Origin gets 403 and nothing runs."""
+    env, calls = make_env(outputs={("/bin/bash", "-c"): (0, "installed\n", ""), **DRIVER_OK})
+    st = _use(client, env)
+    evil = {"Origin": "https://evil.example"}
+    r = client.post("/setup/driver/install", headers=evil)
+    assert r.status_code == 403 and r.json() == {"error": "origin not allowed"}
+    assert calls == []
+    r = client.put("/setup/key", headers=evil, json={"provider": "anthropic", "key": "sk-x"})
+    assert r.status_code == 403 and "ANTHROPIC_API_KEY" not in env.environ
+    r = client.put("/settings", headers=evil, json={"plan_only": True})
+    assert r.status_code == 403 and not st.store.get_setting("plan_only", False)
+    pre = client.options("/settings", headers={**evil, "Access-Control-Request-Method": "PUT"})
+    assert pre.status_code == 403
+    assert "access-control-allow-origin" not in pre.headers
+    # Look-alike origins are not the app.
+    for o in ("http://localhost.evil.example", "http://evil.example/?http://localhost",
+              "null", "tauri://localhost.evil"):
+        assert client.get("/health", headers={"Origin": o}).status_code == 403, o
+
+
+@pytest.mark.parametrize("origin", ["http://localhost:1420", "http://127.0.0.1:5173",
+                                    "tauri://localhost", "http://tauri.localhost",
+                                    "https://tauri.localhost", "http://localhost"])
+def test_app_origins_are_allowed_with_cors_headers(client, origin):
+    env, calls = make_env(outputs={("/bin/bash", "-c"): (0, "installed\n", ""), **DRIVER_OK})
+    _use(client, env)
+    r = client.post("/setup/driver/install", headers={"Origin": origin})
+    assert r.status_code == 200 and r.json()["ok"] is True
+    assert r.headers["access-control-allow-origin"] == origin
+    pre = client.options("/settings", headers={"Origin": origin,
+                                               "Access-Control-Request-Method": "PUT"})
+    assert pre.status_code == 200
+    assert pre.headers["access-control-allow-origin"] == origin
+
+
+def test_no_origin_keeps_full_capability(client):
+    """curl and scripts send no Origin: the daemon stays replaceable by a curl script."""
+    env, calls = make_env(outputs={("/bin/bash", "-c"): (0, "installed\n", ""), **DRIVER_OK})
+    _use(client, env)
+    assert client.post("/setup/driver/install").json()["ok"] is True
+    assert ["/bin/bash", "-c", setup.INSTALL_CMD] in calls
+    assert client.get("/health").status_code == 200
