@@ -126,9 +126,19 @@ export const BoundaryCanvas = memo(function BoundaryCanvas(p: BoundaryCanvasProp
       else if (e.key === "h") setTool("pan");
     };
     const up = (e: KeyboardEvent) => { if (e.key === " ") setSpaceHeld(false); };
+    // A space released in another window never sends keyup here; drop it on blur or hide.
+    const release = () => setSpaceHeld(false);
+    const onVisibility = () => { if (document.hidden) release(); };
     window.addEventListener("keydown", down);
     window.addEventListener("keyup", up);
-    return () => { window.removeEventListener("keydown", down); window.removeEventListener("keyup", up); };
+    window.addEventListener("blur", release);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("keydown", down);
+      window.removeEventListener("keyup", up);
+      window.removeEventListener("blur", release);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
   }, [g, cam, doUndo]);
 
   const polyBase = useMemo(() => (p.polygon ? p.polygon.map((q) => dataToBase(q, plot) as Point) : null), [p.polygon, plot]);
