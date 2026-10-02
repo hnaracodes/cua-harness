@@ -64,3 +64,38 @@ test("suggestions fill the composer and never send", async ({ page }) => {
   await expect(page.getByTestId("boundary-canvas")).toHaveCount(0);
   await expect(page.getByText("Chrome (agent's own)")).toBeVisible();
 });
+
+test("history lists a finished task and reopening it replays the run chat", async ({ page }) => {
+  test.setTimeout(120_000);
+  await home(page);
+  await page.getByTestId("composer-input").fill("Find a tennis racket under $100");
+  await page.getByTestId("composer-send").click();
+  await expect(page.getByTestId("boundary-canvas")).toBeVisible({ timeout: 20_000 });
+  await page.getByTestId("approve-all").click();
+  await page.getByTestId("run-primary").click();
+  await expect(page.getByTestId("chat-recap")).toBeVisible({ timeout: 60_000 });
+  await page.getByTestId("new-task").click();
+  await expect(page.getByRole("heading", { name: "What should the agent do?" })).toBeVisible();
+  await page.getByTestId("history-toggle").click();
+  await expect(page.getByTestId("history-item")).toHaveCount(1);
+  await expect(page.getByTestId("history-item")).toContainText("Find a tennis racket under $100");
+  await page.getByTestId("history-item").click();
+  await expect(page.getByTestId("chat-recap")).toBeVisible({ timeout: 10_000 });
+});
+
+test("health pill shows Ready and opens its details", async ({ page }) => {
+  await home(page);
+  const pill = page.getByTestId("health-pill");
+  await expect(pill).toContainText("Ready");
+  await pill.click();
+  await expect(page.getByRole("dialog", { name: "Daemon status" })).toContainText("This session");
+});
+
+test("daemon down: pill and banner say Reconnecting…, sending is blocked with a reason", async ({ page }) => {
+  await page.goto("/?mock&down=1");
+  await expect(page.getByTestId("health-pill")).toContainText("Reconnecting…", { timeout: 10_000 });
+  await expect(page.getByRole("status").filter({ hasText: "Reconnecting to the daemon…" })).toBeVisible();
+  await page.getByTestId("composer-input").fill("anything");
+  await expect(page.getByTestId("composer-send")).toBeDisabled();
+  await expect(page.getByText("The daemon is reconnecting…")).toBeVisible();
+});

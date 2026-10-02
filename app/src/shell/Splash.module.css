@@ -1,0 +1,11 @@
+.splash { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 24px; }
+.logo { width: 44px; height: 44px; border-radius: var(--r-md); background: var(--raised); display: grid; place-items: center; font-size: 22px; }
+.title { font-size: var(--fs-lg); font-weight: 600; }
+.muted { color: var(--text-3); max-width: 520px; text-align: center; line-height: 1.5; }
+.spinner { width: 20px; height: 20px; border-radius: 50%; border: 2px solid var(--line); border-top-color: var(--accent); animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.log {
+  width: min(720px, 100%); max-height: 40vh; overflow: auto; margin: 0; padding: 12px; border-radius: var(--r-md);
+  background: var(--surface); border: 1px solid var(--line); font-family: var(--mono); font-size: var(--fs-xs); white-space: pre-wrap;
+}
+.btn { border: 1px solid var(--line); background: var(--raised); border-radius: var(--r-pill); padding: 6px 14px; cursor: pointer; }
