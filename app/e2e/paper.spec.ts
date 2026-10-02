@@ -53,3 +53,19 @@ test("Re-propose plan is enabled in review and round-trips through the daemon", 
   await expect(btn).toHaveText(/Re-propose plan/, { timeout: 10_000 });
   await expect(page.getByTestId("step-card-1")).toBeVisible();
 });
+
+test("pencil edits a step inline; Escape cancels; Save persists", async ({ page }) => {
+  await page.goto("/?mock&paper");
+  await page.getByTestId("generate-plan").click();
+  await expect(page.getByTestId("step-card-2")).toBeVisible({ timeout: 20_000 });
+  await page.getByTestId("edit-2").click();
+  await page.getByTestId("edit-title-2").fill("Pick the cheapest racket");
+  await page.getByTestId("edit-title-2").press("Escape");
+  await expect(page.getByTestId("step-card-2")).not.toContainText("Pick the cheapest racket");
+  await page.getByTestId("edit-2").click();
+  await page.getByTestId("edit-title-2").fill("Pick the cheapest racket");
+  await page.getByTestId("edit-desc-2").fill("Choose the lowest-priced option under $100.");
+  await page.getByTestId("edit-save-2").click();
+  await expect(page.getByTestId("step-card-2")).toContainText("Pick the cheapest racket");
+  await expect(page.getByTestId("step-card-2")).toContainText("Choose the lowest-priced option under $100.");
+});

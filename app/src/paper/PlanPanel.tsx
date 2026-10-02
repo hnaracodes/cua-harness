@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef } from "react";
+import { memo, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import type { Step, StepStatus } from "../api/types";
 import { GlyphIcon, Icon } from "./Glyph";
 
@@ -13,6 +13,7 @@ interface Props {
   onRemove: (id: string) => void;
   onRestore: (id: string) => void;
   onSelectAll: () => void;
+  onEdit: (id: string, patch: { title?: string; description?: string }) => void;
 }
 
 export const PlanPanel = memo(function PlanPanel(p: Props) {
@@ -38,6 +39,7 @@ export const PlanPanel = memo(function PlanPanel(p: Props) {
             onCheck={p.onCheck}
             onRemove={p.onRemove}
             onRestore={p.onRestore}
+            onEdit={p.onEdit}
           />
         ))}
       </div>
@@ -55,6 +57,7 @@ const StepCard = memo(function StepCard({
   onCheck,
   onRemove,
   onRestore,
+  onEdit,
 }: {
   step: Step;
   st: StepStatus;
@@ -65,12 +68,34 @@ const StepCard = memo(function StepCard({
   onCheck: (id: string, on: boolean) => void;
   onRemove: (id: string) => void;
   onRestore: (id: string) => void;
+  onEdit: (id: string, patch: { title?: string; description?: string }) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (selected) ref.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }, [selected]);
   const removed = st === "removed";
+  const [editing, setEditing] = useState(false);
+  const [title, setTitle] = useState(step.title);
+  const [desc, setDesc] = useState(step.description);
+  const begin = () => {
+    setTitle(step.title);
+    setDesc(step.description);
+    setEditing(true);
+  };
+  const save = () => {
+    const patch: { title?: string; description?: string } = {};
+    if (title.trim() && title.trim() !== step.title) patch.title = title.trim();
+    if (desc.trim() && desc.trim() !== step.description) patch.description = desc.trim();
+    if (patch.title || patch.description) onEdit(step.id, patch);
+    setEditing(false);
+  };
+  const keys = (e: KeyboardEvent) => {
+    if (e.key === "Escape") {
+      e.stopPropagation();
+      setEditing(false);
+    } else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) save();
+  };
   return (
     <div
       ref={ref}
@@ -94,14 +119,47 @@ const StepCard = memo(function StepCard({
         />
       </label>
       <div className="card-body">
-        <div className="card-title-row">
-          <GlyphIcon glyph={String(step.glyph)} size={13} className="card-glyph" />
-          <span className="card-title">
-            <span className="card-index">{step.index}.</span> {step.title}
-          </span>
-          {!removed && inside && !checked && <span className="tag tag-inside">In boundary</span>}
-        </div>
-        <div className="card-desc">{step.description}</div>
+        {editing ? (
+          <div className="edit-box" onClick={(e) => e.stopPropagation()}>
+            <input
+              className="edit-title"
+              data-testid={`edit-title-${step.index}`}
+              value={title}
+              autoFocus
+              onChange={(e) => setTitle(e.target.value)}
+              onKeyDown={keys}
+              aria-label={`Title of step ${step.index}`}
+            />
+            <textarea
+              className="edit-desc"
+              data-testid={`edit-desc-${step.index}`}
+              value={desc}
+              rows={3}
+              onChange={(e) => setDesc(e.target.value)}
+              onKeyDown={keys}
+              aria-label={`Description of step ${step.index}`}
+            />
+            <div className="edit-actions">
+              <button className="btn btn-small" data-testid={`edit-cancel-${step.index}`} onClick={() => setEditing(false)}>
+                Cancel
+              </button>
+              <button className="btn btn-small btn-primary" data-testid={`edit-save-${step.index}`} onClick={save}>
+                Save
+              </button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="card-title-row">
+              <GlyphIcon glyph={String(step.glyph)} size={13} className="card-glyph" />
+              <span className="card-title">
+                <span className="card-index">{step.index}.</span> {step.title}
+              </span>
+              {!removed && inside && !checked && <span className="tag tag-inside">In boundary</span>}
+            </div>
+            <div className="card-desc">{step.description}</div>
+          </>
+        )}
         {removed && (
           <div className="removed-note">
             {Icon.minusCircle(11)} <span>Removed by oversight - excluded from the plan</span>
@@ -115,11 +173,16 @@ const StepCard = memo(function StepCard({
           </button>
         ) : (
           <>
-            <span title="Editing is cut for the sprint" data-testid={`edit-${step.index}`}>
-              <button className="icon-btn" disabled aria-label="Edit step (cut for the sprint)">
-                {Icon.pencil(12)}
-              </button>
-            </span>
+            <button
+              className="icon-btn"
+              data-testid={`edit-${step.index}`}
+              title="Edit this step"
+              aria-label={`Edit step ${step.index}`}
+              onClick={begin}
+              disabled={editing}
+            >
+              {Icon.pencil(12)}
+            </button>
             <button className="icon-btn" data-testid={`remove-${step.index}`} title="Remove this step" aria-label={`Remove step ${step.index}`} onClick={() => onRemove(step.id)}>
               {Icon.xCircle(14)}
             </button>

@@ -80,7 +80,8 @@ export function PaperView({ api, conn, session, setPaperView }: ScreenProps) {
                     <PlanPanel steps={state.steps} status={cls.status} checked={state.checked} inside={cls.inside}
                       selectedId={state.selectedId} onSelect={actions.select}
                       onCheck={(id, on) => actions.check(id, on, "plan_panel")} onRemove={(id) => actions.remove(id, "plan_panel")}
-                      onRestore={actions.restore} onSelectAll={actions.approveAll} />
+                      onRestore={actions.restore} onSelectAll={actions.approveAll}
+                      onEdit={(id, patch) => void actions.editStep(id, patch)} />
                   </div>
                 </main>
                 <footer className="footer">
