@@ -1,0 +1,192 @@
+.thread {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  scroll-behavior: smooth;
+}
+.user {
+  align-self: flex-end;
+  max-width: 88%;
+  background: var(--raised);
+  border-radius: 14px 14px 4px 14px;
+  padding: 9px 12px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+}
+.thumbs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.thumb {
+  width: 56px;
+  height: 42px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+}
+.assistant {
+  line-height: 1.5;
+  color: var(--text);
+}
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  padding: 3px 9px;
+  font-size: var(--fs-xs);
+}
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+.ok {
+  background: var(--ok);
+}
+.pend {
+  background: var(--pend);
+}
+.rm {
+  background: var(--rm);
+}
+.meta {
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+  margin-top: 6px;
+}
+.muted {
+  color: var(--text-3);
+  font-size: var(--fs-sm);
+}
+.progress {
+  display: flex;
+  gap: 9px;
+  align-items: center;
+  color: var(--text-2);
+}
+.spinner {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  border-radius: 50%;
+  border: 2px solid var(--line);
+  border-top-color: var(--accent);
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.step {
+  display: flex;
+  gap: 9px;
+  line-height: 1.45;
+}
+.mark {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  margin-top: 1px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--accent-ink);
+}
+.markDone {
+  background: var(--ok);
+}
+.markFailed {
+  background: var(--rm);
+}
+.markOther {
+  background: var(--raised);
+  color: var(--text-2);
+}
+.error {
+  border: 1px solid var(--rm);
+  background: var(--rm-soft);
+  border-radius: var(--r-md);
+  padding: 10px 12px;
+}
+.notice {
+  border-radius: var(--r-md);
+  padding: 8px 12px;
+  font-size: var(--fs-sm);
+  background: var(--raised);
+}
+.warn {
+  background: var(--pend-soft);
+}
+.recap {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: var(--r-md);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.recap h4 {
+  margin: 0;
+  font-size: var(--fs-md);
+}
+.li {
+  display: flex;
+  gap: 7px;
+}
+.liDone {
+  color: var(--ok);
+}
+.liSkip {
+  color: var(--text-3);
+}
+.details {
+  border-top: 1px solid var(--line);
+  padding-top: 7px;
+  color: var(--text-3);
+  font-size: var(--fs-sm);
+}
+.linkBtn {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.linkBtn:hover {
+  color: var(--text);
+}
+.btn {
+  margin-left: 8px;
+  border: 1px solid var(--line);
+  background: var(--raised);
+  border-radius: var(--r-pill);
+  padding: 4px 11px;
+  cursor: pointer;
+}
+.log {
+  margin: 6px 0 0;
+  max-height: 220px;
+  overflow: auto;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre;
+  color: var(--text-2);
+}
