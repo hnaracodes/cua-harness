@@ -239,6 +239,8 @@ POST /task/{id}/plan  -> {"task_id", "steps": [Step], "scores": [Score]}
                          Blocks until scored. Emits plan_progress + cost on the event stream meanwhile.
 GET  /task/{id}/scores -> {"steps", "scores"}
 PUT  /task/{id}/boundary body {"x_dim", "y_dim", "polygon": [[x,y],...]} -> {"boundary_id", "inside_step_ids"}
+                         An empty polygon ([] or fewer than 3 points) deletes the stored polygon for that
+                         axis pair. The UI sends this on Clear.
 POST /task/{id}/decision body {"step_id", "action": "remove|restore|check|uncheck", "source": "plan_panel|grid"}
                          -> {"ok": true}. Recorded with a snapshot of the step's scores (training signal).
 POST /task/{id}/run   body {"approved_step_ids": [], "checked_step_ids": [], "removed_step_ids": [],
