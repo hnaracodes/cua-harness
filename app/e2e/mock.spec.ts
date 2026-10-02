@@ -124,3 +124,69 @@ test("listTasks is newest first", async ({ page }) => {
   });
   expect(ids.list.slice(0, 2)).toEqual([ids.b, ids.a]);
 });
+
+test("?setup walks key → driver → permissions → self-test → complete", async ({ page }) => {
+  await mock(page, "fast&setup");
+  const r = await page.evaluate(async () => {
+    const api = (window as any).__oversightMock.api;
+    const s0 = await api.setupStatus();
+    const h0 = await api.health();
+    const bad = await api.setKey("anthropic", "nope");
+    const good = await api.setKey("anthropic", "sk-test");
+    const startEarly = await api.startDriver();
+    const inst = await api.installDriver();
+    const start = await api.startDriver();
+    const testEarly = await api.selfTest();
+    await api.openPermission("accessibility");
+    await api.openPermission("screen_recording");
+    const mid = await api.setupStatus();
+    await new Promise((r) => setTimeout(r, 450));
+    const granted = await api.setupStatus();
+    const st = await api.selfTest();
+    await api.completeSetup();
+    return { s0, h0, bad, good, startEarly, inst, start, testEarly, mid, granted, st, s1: await api.setupStatus(), h1: await api.health() };
+  });
+  expect(r.s0).toMatchObject({ complete: false, key: { present: false, source: "none" }, driver: { installed: false, running: false }, permissions: { accessibility: "unknown", screen_recording: "unknown" }, self_test: { passed_at: null } });
+  expect(r.h0.setup_complete).toBe(false);
+  expect(r.bad.ok).toBe(false);
+  expect(r.good).toEqual({ ok: true, error: null });
+  expect(r.startEarly.ok).toBe(false);
+  expect(r.inst.ok).toBe(true);
+  expect(r.start.ok).toBe(true);
+  expect(r.testEarly.ok).toBe(false);
+  expect(r.mid.permissions.accessibility).toBe("unknown");
+  expect(r.granted.permissions).toEqual({ accessibility: "granted", screen_recording: "granted" });
+  expect(r.st.ok).toBe(true);
+  expect(r.s1.complete).toBe(true);
+  expect(r.s1.self_test.passed_at).not.toBeNull();
+  expect(r.h1.setup_complete).toBe(true);
+});
+
+test("?nonmac reports linux with n/a permissions; self-test needs only the driver", async ({ page }) => {
+  await mock(page, "fast&setup&nonmac");
+  const r = await page.evaluate(async () => {
+    const api = (window as any).__oversightMock.api;
+    await api.installDriver();
+    await api.startDriver();
+    return { s: await api.setupStatus(), t: await api.selfTest() };
+  });
+  expect(r.s.platform).toBe("linux");
+  expect(r.s.permissions).toEqual({ accessibility: "n/a", screen_recording: "n/a" });
+  expect(r.t.ok).toBe(true);
+});
+
+test("?down=1 rejects health until setDown(false)", async ({ page }) => {
+  await mock(page, "fast&down=1");
+  const r = await page.evaluate(async () => {
+    const m = (window as any).__oversightMock;
+    let failed = false;
+    try {
+      await m.api.health();
+    } catch {
+      failed = true;
+    }
+    m.setDown(false);
+    return { failed, back: (await m.api.health()).daemon };
+  });
+  expect(r).toEqual({ failed: true, back: "ok" });
+});

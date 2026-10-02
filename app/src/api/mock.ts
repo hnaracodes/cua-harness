@@ -17,7 +17,9 @@ import type {
   EventKind,
   Health,
   OversightEvent,
+  PermState,
   PlanResponse,
+  Provider,
   RunBody,
   ImageMime,
   RunRecord,
@@ -68,6 +70,27 @@ export function createMockDaemon(): DaemonApi {
     plan_only: false,
     models: { anthropic: ["claude-sonnet-5-5", "claude-opus-5-5"], openai: ["gpt-5.5"] },
   };
+  const na: PermState = "n/a";
+  const setup: SetupStatus = MODE.setup
+    ? {
+        platform: MODE.nonmac ? "linux" : "macos",
+        key: { provider: "anthropic", present: false, source: "none", tested: false, warning: null },
+        driver: { installed: false, version: null, running: false },
+        permissions: MODE.nonmac ? { accessibility: na, screen_recording: na } : { accessibility: "unknown", screen_recording: "unknown" },
+        self_test: { passed_at: null },
+        plan_only: false,
+        complete: false,
+      }
+    : {
+        platform: MODE.nonmac ? "linux" : "macos",
+        key: { provider: "anthropic", present: true, source: "env", tested: true, warning: null },
+        driver: { installed: true, version: "mock", running: true },
+        permissions: MODE.nonmac ? { accessibility: na, screen_recording: na } : { accessibility: "granted", screen_recording: "granted" },
+        self_test: { passed_at: new Date().toISOString() },
+        plan_only: false,
+        complete: true,
+      };
+  const permsOk = () => (["accessibility", "screen_recording"] as const).every((k) => setup.permissions[k] === "granted" || setup.permissions[k] === "n/a");
   let costTotal = 0;
   let seq = 0;
 
@@ -124,6 +147,7 @@ export function createMockDaemon(): DaemonApi {
     baseUrl: "mock://in-browser",
 
     async health(): Promise<Health> {
+      if (MODE.down) throw new Error("mock: daemon down (?down=1)");
       return {
         daemon: "ok",
         api_key: true,
@@ -133,7 +157,7 @@ export function createMockDaemon(): DaemonApi {
         fixtures: true,
         exec_mode: "simulated",
         cost_usd_total: costTotal,
-        setup_complete: true,
+        setup_complete: setup.complete,
         plan_only: settings.plan_only,
         status_line: `Mock daemon (in-browser fixtures). cua-driver simulated, model ${FIXTURE_MODEL}.`,
       };
@@ -326,25 +350,50 @@ export function createMockDaemon(): DaemonApi {
     },
     frameUrl: (taskId: string, seq: number) => tasks.get(taskId)?.frames.get(seq) ?? "",
     async setupStatus(): Promise<SetupStatus> {
-      return {
-        platform: "macos",
-        key: { provider: settings.provider, present: true, source: "env", tested: true, warning: null },
-        driver: { installed: true, version: "mock", running: true },
-        permissions: { accessibility: "granted", screen_recording: "granted" },
-        self_test: { passed_at: new Date().toISOString() },
-        plan_only: settings.plan_only,
-        complete: true,
-      };
+      return JSON.parse(JSON.stringify(setup)) as SetupStatus;
     },
-    async setKey() { return { ok: true, error: null }; },
-    async installDriver() { return { ok: true, version: "mock", log_tail: "" }; },
-    async startDriver() { return { ok: true, error: null }; },
-    async openPermission() { return { ok: true }; },
-    async selfTest() { return { ok: true, detail: "mock self-test passed" }; },
-    async completeSetup() { return { ok: true }; },
-    async getSettings() { return { ...settings, models: { ...settings.models } }; },
+    async setKey(provider: Provider, key: string) {
+      await sleep(ms(300));
+      if (!key.trim().startsWith("sk-")) return { ok: false, error: "That doesn't look like an API key (it should start with sk-)." };
+      setup.key = { provider, present: true, source: "keychain", tested: true, warning: null };
+      settings.provider = provider;
+      return { ok: true, error: null };
+    },
+    async installDriver() {
+      await sleep(ms(800));
+      setup.driver = { installed: true, version: "0.32.0 (mock)", running: false };
+      return { ok: true, version: setup.driver.version, log_tail: "Installed CuaDriver.app (mock)." };
+    },
+    async startDriver() {
+      if (!setup.driver.installed) return { ok: false, error: "cua-driver is not installed" };
+      await sleep(ms(300));
+      setup.driver.running = true;
+      return { ok: true, error: null };
+    },
+    async openPermission(which: "accessibility" | "screen_recording") {
+      if (setup.permissions[which] !== "n/a") setTimeout(() => { setup.permissions[which] = "granted"; }, MODE.fast ? 300 : 1500);
+      return { ok: true };
+    },
+    async selfTest() {
+      await sleep(ms(1000));
+      if (!setup.driver.running) return { ok: false, detail: "cua-driver is not running." };
+      if (!permsOk()) return { ok: false, detail: "Accessibility and Screen Recording must both be allowed for CuaDriver." };
+      setup.self_test = { passed_at: new Date().toISOString() };
+      return { ok: true, detail: "Typed \"hello\" into a scratch window and read it back." };
+    },
+    async completeSetup() {
+      setup.complete = true;
+      return { ok: true };
+    },
+    async getSettings() {
+      return { ...settings, models: { ...settings.models } };
+    },
     async putSettings(patch: Partial<Pick<AppSettings, "provider" | "model" | "plan_only">>) {
+      if (patch.provider && !(patch.provider in settings.models)) throw new HttpError(400, { error: `unknown provider ${patch.provider}` });
+      const prov = patch.provider ?? settings.provider;
+      if (patch.model && !settings.models[prov].includes(patch.model)) throw new HttpError(400, { error: `unknown model ${patch.model}` });
       Object.assign(settings, patch);
+      if (patch.plan_only !== undefined) setup.plan_only = patch.plan_only;
       return { ...settings, models: { ...settings.models } };
     },
 
