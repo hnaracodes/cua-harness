@@ -4,7 +4,7 @@
 // exactly as the contract says: label i of N owns [i/N, (i+1)/N].
 
 import { hash32 } from "../lib/geometry";
-import type { Dimension, Glyph } from "./types";
+import type { Dimension, Glyph, StepApp } from "./types";
 
 export const DEFAULT_TASK =
   "Help me find a tennis racket less than $100 for my friends birthday present, and prepare a short message to my other friends to let them know I am planning a party via whatsapp.";
@@ -207,6 +207,16 @@ export const FIXTURE_STEPS: FixtureStep[] = [
 ];
 
 export const FIXTURE_MODEL = "gpt-5.5";
+
+export const MESSAGES_APP: StepApp = { name: "Messages", bundle_id: "com.apple.MobileSMS" };
+
+/** Native-app routing for the fixture plan: a prompt that asks for iMessage (or the Messages
+ *  app) routes the messaging steps (draft, recipients, send) to Messages; everything else,
+ *  and every other prompt, stays in the agent's own browser (null). */
+export function fixtureApp(prompt: string, step: { title: string; glyph: Glyph | string }): StepApp | null {
+  if (!/\bi-?messages?\b|\bmessages app\b/i.test(prompt)) return null;
+  return /whatsapp|message|recipient|send/i.test(step.title) ? { ...MESSAGES_APP } : null;
+}
 
 /** Deterministic cells for a step that is not in the fixture plan (mock re-propose, ?many).
  *  Same title -> same cells -> same point, so equal titles tie exactly. */

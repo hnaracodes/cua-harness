@@ -8,7 +8,7 @@ import { classify, indexScores, pairKey, splitPairKey } from "../lib/approval";
 import type { PolygonMap } from "../lib/approval";
 import type { DaemonApi, EventListener } from "./client";
 import { HttpError } from "./errors";
-import { FIXTURE_DIMENSIONS, FIXTURE_MODEL, FIXTURE_STEPS, syntheticCells } from "./fixtures";
+import { FIXTURE_DIMENSIONS, FIXTURE_MODEL, FIXTURE_STEPS, fixtureApp, syntheticCells } from "./fixtures";
 import type {
   AppSettings,
   Attachment,
@@ -205,6 +205,7 @@ export function createMockDaemon(): DaemonApi {
         status: "pending",
         edited_from: null,
         revision: 0,
+        app: i < FIXTURE_STEPS.length ? fixtureApp(t.prompt, s) : null,
       }));
       emit(t, "plan_progress", { stage: "scoring", message: `${total} step(s). Scoring actions and placing them on the grid.`, done: 0, total });
       t.scores = [];
@@ -323,7 +324,7 @@ export function createMockDaemon(): DaemonApi {
         const idx = t.steps.length + 1;
         const s: Step = {
           id: `stp_${taskId.slice(4)}_r${t.revision}_${idx}`, task_id: taskId, index: idx, title: clip(text),
-          description: `Added on request: ${text}`, glyph: "generic", status: "pending", edited_from: null, revision: t.revision,
+          description: `Added on request: ${text}`, glyph: "generic", status: "pending", edited_from: null, revision: t.revision, app: null,
         };
         t.steps.push(s);
         t.scores.push(...scoresFor(s));
@@ -436,7 +437,7 @@ export function createMockDaemon(): DaemonApi {
       // Executor-side assertion, mirrored: never dispatch an unapproved step.
       if (!approved.has(s.id)) throw new Error(`UnapprovedStepError: ${s.id}`);
       attempted.push(s.id);
-      emit(t, "step_started", { step_id: s.id, index: s.index, title: s.title }, runId);
+      emit(t, "step_started", { step_id: s.id, index: s.index, title: s.title, app: s.app?.name ?? null }, runId);
       const t0 = Date.now();
       let stepActions = 0;
       let halted = false;
