@@ -99,7 +99,12 @@ export function eventsToMessages(input: ChatInput): ChatMessage[] {
             planned = true;
             out.push({ kind: "plan_ready", id: `plan-${ev.seq}`, stepCount: pp.total, revision: 0 });
           }
-          if (pp.stage === "error") out.push({ kind: "plan_error", id: `plan-error-${ev.seq}`, error: pp.message });
+          // After the first plan, planning only runs again for a revise: its Try again must
+          // re-send the instruction, not re-plan (which would just reload the saved plan).
+          if (pp.stage === "error")
+            out.push(planned
+              ? { kind: "revise_error", id: `revise-error-${ev.seq}`, seq: ev.seq, error: pp.message, instruction: null }
+              : { kind: "plan_error", id: `plan-error-${ev.seq}`, error: pp.message });
         }
       } else if (ev.kind === "plan_revised") {
         const rv = p as PlanRevisedPayload;

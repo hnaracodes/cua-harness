@@ -196,3 +196,15 @@ test("a run still in progress lists approved steps that have not started yet", (
   const started = eventsToMessages(input(upToS1Action)).find((x) => x.kind === "run_started") as Extract<ChatMessage, { kind: "run_started" }>;
   assert.deepEqual([started.approvedIndexes, started.skippedIndexes], [[1, 2], [3]]);
 });
+
+test("an error while revising an existing plan is a revise error, not a plan error", () => {
+  const ev = stream();
+  const all = [
+    ...planEvents(ev),
+    ev("plan_progress", { stage: "planning", message: "Revising the plan.", done: 0, total: 0 }),
+    ev("plan_progress", { stage: "error", message: "model refused", done: 0, total: 0 }),
+  ];
+  const m = eventsToMessages(input(all));
+  assert.deepEqual(kinds(m), ["user", "plan_ready", "revise_error"]);
+  assert.deepEqual(m[2], { kind: "revise_error", id: "revise-error-7", seq: 7, error: "model refused", instruction: null });
+});

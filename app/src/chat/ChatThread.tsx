@@ -16,6 +16,8 @@ export interface ChatThreadProps {
   events: OversightEvent[];
   steps: Step[];
   onRetryPlan?: () => void;
+  /** Re-sends a failed revise; shown on revise errors that carry their instruction. */
+  onRetryRevise?: (instruction: string) => void;
 }
 
 type Msg<K extends ChatMessage["kind"]> = Extract<ChatMessage, { kind: K }>;
@@ -23,7 +25,7 @@ type Msg<K extends ChatMessage["kind"]> = Extract<ChatMessage, { kind: K }>;
 const secs = (ms: number) => `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)}s`;
 const list = (xs: number[]) => xs.join(", ");
 
-export function ChatThread({ api, messages, counts, meta, events, steps, onRetryPlan }: ChatThreadProps) {
+export function ChatThread({ api, messages, counts, meta, events, steps, onRetryPlan, onRetryRevise }: ChatThreadProps) {
   const box = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
 
@@ -68,6 +70,18 @@ export function ChatThread({ api, messages, counts, meta, events, steps, onRetry
                 {m.error}
                 {onRetryPlan && (
                   <button className={s.btn} data-testid="chat-retry" onClick={onRetryPlan}>
+                    Try again
+                  </button>
+                )}
+              </div>
+            );
+          case "revise_error":
+            return (
+              <div key={m.id} className={s.error} data-testid="chat-revise-error">
+                I couldn't revise the plan: {m.error}
+                {m.instruction !== null && " Your message is back in the box, and the plan is unchanged."}
+                {m.instruction !== null && onRetryRevise && (
+                  <button className={s.btn} data-testid="chat-revise-retry" onClick={() => onRetryRevise(m.instruction!)}>
                     Try again
                   </button>
                 )}

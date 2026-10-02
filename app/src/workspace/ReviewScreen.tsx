@@ -1,6 +1,7 @@
 // Review: chat left (revise by typing), workspace right (axes, canvas, steps, action bar).
 import { useMemo, useState } from "react";
 import type { CostPayload, OversightEvent, PlanProgressPayload } from "../api/types";
+import type { ChatMessage } from "../chat/types";
 import { BoundaryCanvas } from "../canvas/BoundaryCanvas";
 import { ChatThread } from "../chat/ChatThread";
 import { eventsToMessages } from "../chat/eventsToMessages";
@@ -29,16 +30,40 @@ function planMeta(events: OversightEvent[], model: string | null): string | null
   return [model, `planned + scored in ${((end - start) / 1000).toFixed(1)}s`, `$${cost.toFixed(2)}`].filter(Boolean).join(" · ");
 }
 
+/** Attach the failed instruction to that attempt's streamed revise error (so it gets Try
+ *  again), or add the error when the request failed before the daemon streamed one. */
+function withReviseFailure(messages: ChatMessage[], fail: { instruction: string; error: string; afterSeq: number } | null): ChatMessage[] {
+  if (!fail) return messages;
+  let i = messages.length - 1;
+  while (i >= 0 && !(messages[i].kind === "revise_error" && ((messages[i] as { seq: number | null }).seq ?? -1) > fail.afterSeq)) i--;
+  if (i >= 0) return messages.map((m, j) => (j === i ? { ...m, instruction: fail.instruction } as ChatMessage : m));
+  return [...messages, { kind: "revise_error", id: `revise-error-local-${fail.afterSeq}`, seq: null, error: fail.error, instruction: fail.instruction }];
+}
+
 export function ReviewScreen(props: ScreenProps) {
   const { api, conn, session, setPaperView, openSetup } = props;
   const { state, cls, counts, idx, actions } = session;
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
+  // The last revise that failed: its instruction (for Try again) and why. `afterSeq` is the
+  // stream position when it was sent, so only that attempt's streamed error picks it up.
+  const [reviseFail, setReviseFail] = useState<{ instruction: string; error: string; afterSeq: number } | null>(null);
 
-  const messages = useMemo(
+  const streamed = useMemo(
     () => eventsToMessages({ prompt: state.prompt, attachments: state.attachments, steps: state.steps, events: state.events, planError: state.planError }),
     [state.prompt, state.attachments, state.steps, state.events, state.planError],
   );
+  const messages = useMemo(() => withReviseFailure(streamed, reviseFail), [streamed, reviseFail]);
+
+  const sendRevise = (instruction: string) => {
+    const afterSeq = state.events.length ? state.events[state.events.length - 1].seq : 0;
+    setReviseFail(null);
+    // Keep the draft until the daemon has the revision, so a failure loses nothing.
+    void actions.revise(instruction, (error) => setReviseFail({ instruction, error, afterSeq })).then((ok) => {
+      if (ok) setDraft((d) => (d === instruction ? "" : d));
+      else setDraft((d) => (d.trim() ? d : instruction));
+    });
+  };
   const meta = useMemo(() => planMeta(state.events, conn.health?.model ?? null), [state.events, conn.health?.model]);
   const progress = useMemo(() => {
     for (let i = state.events.length - 1; i >= 0; i--)
@@ -58,12 +83,12 @@ export function ReviewScreen(props: ScreenProps) {
     <div className={s.screen}>
       <section className={s.chat}>
         <ChatThread api={api} messages={messages} counts={reviewing ? counts : null} meta={meta} events={state.events}
-          steps={state.steps} onRetryPlan={() => void actions.retryPlan()} />
+          steps={state.steps} onRetryPlan={() => void actions.retryPlan()} onRetryRevise={sendRevise} />
         <div className={s.dock}>
           <Composer api={api} value={draft} onChange={setDraft} attachments={[]} onAttachmentsChange={() => undefined}
             allowAttachments={false} providerLabel={conn.health?.provider === "openai" ? "OpenAI" : "Anthropic"}
             placeholder="Reply, or ask me to change a step…" size="dock" disabledReason={disabledReason} running={false}
-            onSend={() => { const t = draft; setDraft(""); void actions.revise(t); }} />
+            onSend={() => sendRevise(draft)} />
         </div>
       </section>
 

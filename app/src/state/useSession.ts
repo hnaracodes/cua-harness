@@ -11,7 +11,9 @@ export interface Counts { approved: number; pending: number; removed: number }
 export interface SessionActions {
   submit(prompt: string, attachments: Attachment[]): Promise<void>;
   retryPlan(): Promise<void>;
-  revise(instruction: string): Promise<void>;
+  /** Resolves true once the daemon has the revised plan, false on failure. The failure goes
+   *  to `onError` when given (the caller shows it), else to the session notice. */
+  revise(instruction: string, onError?: (message: string) => void): Promise<boolean>;
   editStep(stepId: string, patch: { title?: string; description?: string }): Promise<void>;
   check(stepId: string, on: boolean, source?: DecisionSource): void;
   remove(stepId: string, source?: DecisionSource): void;
@@ -133,17 +135,20 @@ export function useSession(api: DaemonApi | null): Session {
         dispatch({ type: "retry_plan" });
         await planNow(t);
       },
-      async revise(instruction) {
+      async revise(instruction, onError) {
         const a = apiRef.current;
         const t = ref.current.taskId;
-        if (!a || !t || !instruction.trim()) return;
+        if (!a || !t || !instruction.trim()) return false;
         dispatch({ type: "busy", busy: "revising" });
         try {
           const p = await a.repropose(t, instruction.trim());
           dispatch({ type: "plan_revised", steps: p.steps, scores: p.scores });
+          return true;
         } catch (e) {
           dispatch({ type: "busy", busy: null });
-          notice(`Revising the plan failed: ${msg(e)}`);
+          if (onError) onError(msg(e));
+          else notice(`Revising the plan failed: ${msg(e)}`);
+          return false;
         }
       },
       async editStep(stepId, patch) {
