@@ -41,3 +41,15 @@ test("Exit Paper view sits in the header row, right-aligned, not over content", 
   const [eb, hb] = await Promise.all([exit.boundingBox(), page.locator("header.app-header h1").boundingBox()]);
   expect(eb!.x).toBeGreaterThan(hb!.x + hb!.width);
 });
+
+test("Re-propose plan is enabled in review and round-trips through the daemon", async ({ page }) => {
+  await page.goto("/?mock&paper");
+  await page.getByTestId("generate-plan").click();
+  await expect(page.getByTestId("boundary-canvas")).toBeVisible({ timeout: 20_000 });
+  const btn = page.getByTestId("repropose");
+  await expect(btn).toBeEnabled();
+  await btn.click();
+  await expect(btn).toHaveText(/Re-proposing/);
+  await expect(btn).toHaveText(/Re-propose plan/, { timeout: 10_000 });
+  await expect(page.getByTestId("step-card-1")).toBeVisible();
+});

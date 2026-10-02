@@ -10,6 +10,10 @@ import { OversightPanel } from "./OversightPanel";
 import { PlanPanel } from "./PlanPanel";
 import "./paper.css";
 
+// Paper has no instruction box (docs/02). The daemon already sends the planner every
+// approve/remove/edit decision; this sentence only asks it to respect them.
+const PAPER_REPROPOSE = "Re-propose the plan, keeping my approved steps and leaving out the ones I removed.";
+
 export function PaperView({ api, conn, session, setPaperView }: ScreenProps) {
   const { state, cls, counts, idx, canRun, actions } = session;
   const [draft, setDraft] = useState(DEFAULT_TASK);
@@ -91,7 +95,14 @@ export function PaperView({ api, conn, session, setPaperView }: ScreenProps) {
                   <div className="footer-row">
                     <button className="btn" data-testid="start-over" onClick={actions.newTask}>Start over</button>
                     <div className="footer-right">
-                      <button className="btn" disabled data-testid="repropose">{Icon.refresh(13)} Re-propose plan</button>
+                      <button
+                        className="btn"
+                        data-testid="repropose"
+                        disabled={state.busy !== null}
+                        onClick={() => void actions.revise(PAPER_REPROPOSE)}
+                      >
+                        {Icon.refresh(13)} {state.busy === "revising" ? "Re-proposing..." : "Re-propose plan"}
+                      </button>
                       <button className="btn btn-primary" data-testid="approve-run" disabled={!canRun} onClick={() => void actions.run()}>
                         {Icon.play(11)} {state.busy === "starting_run" ? "Starting..." : "Approve & Run"}
                       </button>
