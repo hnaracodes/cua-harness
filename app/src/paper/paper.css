@@ -1,6 +1,8 @@
-/* Agent Oversight: dark translucent macOS look, after reference/02 to 08. */
+/* Paper view: the source-video replica (docs/02). Every global rule is scoped to
+   .paper-root so it never touches the Graphite UI. Class rules below stay global
+   but only Paper components use these class names (new UI uses CSS Modules). */
 
-:root {
+.paper-root {
   --approved: #3cc95b;
   --approved-soft: rgba(60, 201, 91, 0.16);
   --pending: #f2922f;
@@ -9,38 +11,22 @@
   --accent: #2f7cf6;
   --info: #5aa7ff;
   --muted-dot: #a0a7ad;
-
   --text: rgba(255, 255, 255, 0.92);
   --text-2: rgba(235, 242, 247, 0.66);
   --text-3: rgba(235, 242, 247, 0.46);
   --line: rgba(255, 255, 255, 0.1);
   --card: rgba(255, 255, 255, 0.055);
   --card-hi: rgba(255, 255, 255, 0.085);
-
   --bg-a: #22495a;
   --bg-b: #1e3a48;
   --bg-c: #2a5654;
-
   color-scheme: dark;
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", "Segoe UI", system-ui, sans-serif;
   font-size: 13px;
   line-height: 1.35;
   color: var(--text);
   -webkit-font-smoothing: antialiased;
-}
-
-* {
-  box-sizing: border-box;
-}
-
-html,
-body,
-#root {
   height: 100%;
-  margin: 0;
-}
-
-body {
   background: radial-gradient(120% 90% at 85% 100%, var(--bg-c) 0%, transparent 60%),
     linear-gradient(160deg, var(--bg-a) 0%, var(--bg-b) 55%, #1c3540 100%);
   background-color: var(--bg-b);
@@ -49,8 +35,7 @@ body {
   -webkit-user-select: none;
 }
 
-/* Native vibrancy underneath in Tauri: keep the tint, let the desktop through. */
-html.tauri body {
+html.tauri .paper-root {
   background: radial-gradient(120% 90% at 85% 100%, rgba(42, 86, 84, 0.55) 0%, transparent 60%),
     linear-gradient(160deg, rgba(34, 73, 90, 0.78) 0%, rgba(30, 58, 72, 0.82) 55%, rgba(28, 53, 64, 0.86) 100%);
 }
