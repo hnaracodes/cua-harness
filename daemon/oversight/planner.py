@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from .apps import resolve_app
 from .llm import CallRecord, ImageInput, LLMError, StructuredLLM
 
 GLYPHS = ("search", "compare", "cart", "message", "send", "contacts", "browse",
@@ -24,8 +25,9 @@ PLAN_SCHEMA = {
                     "title": {"type": "string"},
                     "description": {"type": "string"},
                     "glyph": {"type": "string", "enum": list(GLYPHS)},
+                    "app": {"type": ["string", "null"]},
                 },
-                "required": ["title", "description", "glyph"],
+                "required": ["title", "description", "glyph", "app"],
                 "additionalProperties": False,
             },
         }
@@ -49,7 +51,26 @@ each step on its own. So:
 - title: imperative, at most 8 words, e.g. "Search for tennis rackets under $100".
 - description: one or two sentences saying what the agent will do and where.
 - glyph: pick from {", ".join(GLYPHS)}.
+- app: null unless a list of installed apps is given below; then follow its rules.
 Respond with the JSON object only."""
+
+
+def apps_note(catalog: Sequence[dict]) -> str:
+    """The app rules plus the installed app names, for planner and replanner prompts."""
+    names = ", ".join(a["name"] for a in catalog)
+    return ("\n\nInstalled apps the agent can use: " + names + "\n"
+            "Set a step's app to one of these names only when the step must happen in that "
+            "native app (sending an iMessage means Messages, a note means Notes, an email in "
+            "the Mail app means Mail). Web tasks, and anything done in a browser, use null "
+            "(the agent's own browser). Never pick an app that is not listed.")
+
+
+def resolve_step_app(value, catalog: Sequence[dict]) -> dict | None:
+    """The model's app pick to {name, bundle_id}; unknown or denied apps become None."""
+    if not catalog or not isinstance(value, str):
+        return None
+    return resolve_app(value, catalog)
+
 
 IMAGES_NOTE = ("\nThe user attached one or more images with the task. Treat them as context the "
                "user provided (for example a product, a form, or a screenshot to work from). "
@@ -62,9 +83,10 @@ class PlannedStep:
     title: str
     description: str
     glyph: str
+    app: dict | None = None
 
 
-def validate_plan(data: dict) -> list[PlannedStep]:
+def validate_plan(data: dict, catalog: Sequence[dict] = ()) -> list[PlannedStep]:
     steps = data.get("steps")
     if not isinstance(steps, list):
         raise LLMError("plan has no steps array")
@@ -77,18 +99,21 @@ def validate_plan(data: dict) -> list[PlannedStep]:
         glyph = s.get("glyph") if s.get("glyph") in GLYPHS else "generic"
         if not title or not desc:
             raise LLMError("plan step missing title or description")
-        out.append(PlannedStep(title, desc, glyph))
+        out.append(PlannedStep(title, desc, glyph, resolve_step_app(s.get("app"), catalog)))
     return out
 
 
 async def plan_task(llm: StructuredLLM, prompt: str, selected_app: str | None,
-                    on_call=None, images: Sequence[ImageInput] = ()) -> list[PlannedStep]:
+                    on_call=None, images: Sequence[ImageInput] = (),
+                    catalog: Sequence[dict] = ()) -> list[PlannedStep]:
     """Returns validated steps. Retries once on invalid output. `on_call(record)` is
     awaited after every LLM call for cost accounting."""
     user = f"Task: {prompt}"
     if selected_app:
         user += f"\nSelected app: {selected_app}"
     system = SYSTEM + IMAGES_NOTE if images else SYSTEM
+    if catalog:
+        system += apps_note(catalog)
     last: Exception | None = None
     for _attempt in range(2):
         try:
@@ -103,10 +128,11 @@ async def plan_task(llm: StructuredLLM, prompt: str, selected_app: str | None,
         if on_call:
             await on_call(rec)
         try:
-            return validate_plan(data)
+            return validate_plan(data, catalog)
         except LLMError as e:
             last = e
     raise LLMError(f"planner failed: {last}")
 
 
-__all__ = ["GLYPHS", "IMAGES_NOTE", "PlannedStep", "plan_task", "validate_plan", "CallRecord"]
+__all__ = ["GLYPHS", "IMAGES_NOTE", "PlannedStep", "apps_note", "plan_task", "resolve_step_app",
+           "validate_plan", "CallRecord"]
