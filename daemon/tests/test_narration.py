@@ -254,3 +254,103 @@ def test_build_recap_falls_back_on_unexpected_exception():
     r = asyncio.run(recap.build_recap(FakeLLM(exc=RuntimeError("socket closed")), "task",
                                       RSTEPS, RRESULTS, RFINAL))
     assert r["source"] == "fallback"
+
+
+# ------------------------------------------------------------------ recap in _drive
+
+
+def _run_kinds(client, tid):
+    return [e for e in client.app.state.oversight.store.get_events(tid) if e["run_id"]]
+
+
+def test_run_emits_one_recap_right_before_final(client):
+    tid, steps = _start(client, (1, 4))
+    assert _wait(client, tid)["status"] == "completed"
+    evs = _run_kinds(client, tid)
+    kinds = [e["kind"] for e in evs]
+    assert kinds.count("run_recap") == 1 and kinds.count("final_result") == 1
+    assert kinds[-2:] == ["run_recap", "final_result"]
+    rc = evs[-2]["payload"]
+    assert rc["source"] == "fallback"  # fixtures mode: no model
+    assert [d["step_id"] for d in rc["done"]] == [steps[0]["id"], steps[3]["id"]]
+    assert [s["step_id"] for s in rc["skipped"]] == [steps[i]["id"] for i in (1, 2, 4, 5)]
+    assert all(s["reason"] == "Removed before the run." for s in rc["skipped"])
+    results = [e["payload"] for e in evs if e["kind"] == "step_result"]
+    assert all(r["actions"] > 0 and r["duration_ms"] >= 0 for r in results)
+
+
+def test_stop_mid_run_still_recaps_then_final(client):
+    tid, _ = _start(client, (1, 4))
+    client.post(f"/task/{tid}/stop")
+    assert _wait(client, tid)["status"] == "stopped"
+    kinds = [e["kind"] for e in _run_kinds(client, tid)]
+    assert kinds[-2:] == ["run_recap", "final_result"] and kinds.count("run_recap") == 1
+
+
+def test_executor_crash_still_recaps(client, monkeypatch):
+    async def boom(*a, **k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(executor, "run_steps", boom)
+    tid, _ = _start(client, (1,))
+    assert _wait(client, tid)["status"] == "failed"
+    evs = _run_kinds(client, tid)
+    assert [e["kind"] for e in evs][-2:] == ["run_recap", "final_result"]
+    assert evs[-2]["payload"]["source"] == "fallback"
+
+
+def test_recap_uses_the_model_when_present_and_records_cost(client):
+    tid = client.post("/task", json={"prompt": fixtures.TASK_PROMPT}).json()["task_id"]
+    steps = client.post(f"/task/{tid}/plan").json()["steps"]
+    first = steps[0]["id"]
+    good = {"headline": "Found rackets.", "done": [{"step_id": first, "text": "Searched."}],
+            "skipped": [{"step_id": s["id"], "reason": "You removed it."} for s in steps[1:]]}
+    client.app.state.oversight.llm = FakeLLM(good)  # swap in after planning (plan is replayed)
+    r = client.post(f"/task/{tid}/run", json={"approved_step_ids": [first], "checked_step_ids": [first],
+                                              "removed_step_ids": [s["id"] for s in steps[1:]],
+                                              "boundaries": []})
+    assert r.status_code == 200, r.text
+    _wait(client, tid)
+    evs = _run_kinds(client, tid)
+    rc = [e for e in evs if e["kind"] == "run_recap"][0]["payload"]
+    assert rc == {**good, "source": "llm"}
+    calls = client.get(f"/task/{tid}").json()["llm_calls"]
+    assert any(c["scope"] == "recap" for c in calls)
+
+
+def test_cancel_during_recap_call_still_ends_with_recap_then_final(client):
+    tid, _ = _start(client, (1,))
+    _wait(client, tid)  # plan + first run done; now drive a second run with a hanging recap
+    # Reuse the stored plan: approve step 1 again and remove the rest.
+    steps = client.get(f"/task/{tid}").json()["steps"]
+    keep = [s["id"] for s in steps if s["index"] == 1]
+    drop = [s["id"] for s in steps if s["index"] != 1]
+
+    class HangingLLM:
+        async def call(self, **kw):
+            await asyncio.sleep(3600)
+
+    client.app.state.oversight.llm = HangingLLM()
+    r = client.post(f"/task/{tid}/run", json={"approved_step_ids": keep, "checked_step_ids": keep,
+                                              "removed_step_ids": drop, "boundaries": []})
+    assert r.status_code == 200, r.text
+    st = client.app.state.oversight
+    for _ in range(200):
+        evs = [e for e in st.store.get_events(tid) if e["run_id"] == r.json()["run_id"]]
+        if any(e["kind"] == "step_result" for e in evs):
+            break
+        time.sleep(0.02)
+    time.sleep(0.1)
+    task = st.active_runs[tid].task
+    client.portal.call(lambda: _cancel(task))
+    _wait(client, tid)
+    kinds = [e["kind"] for e in st.store.get_events(tid) if e["run_id"] == r.json()["run_id"]]
+    assert kinds[-2:] == ["run_recap", "final_result"] and kinds.count("final_result") == 1
+
+
+async def _cancel(task):
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
