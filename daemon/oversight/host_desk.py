@@ -318,27 +318,90 @@ class AppDesk(AgentDesk):
             return int(out.split()[0])
         raise RuntimeError(f"{self.app_name} did not start")
 
+    #: Recovery ladder timings (seconds). Class attributes so tests can shrink them.
+    LAUNCH_POLL_S = 1.5
+    REOPEN_POLL_S = 3.0
+    MENU_POLL_S = 2.0
+    POLL_EVERY_S = 0.25
+
+    def _adopt(self, wins: list[dict[str, Any]]) -> bool:
+        """Adopt an on-screen window as the target. Prefers the current target
+        window when it is on screen. True when one was adopted."""
+        assert self.target is not None
+        on = [w for w in wins if w.get("is_on_screen") is True and w.get("window_id") is not None]
+        if not on:
+            return False
+        cur = next((w for w in on if int(w["window_id"]) == self.target.window_id), None)
+        win = cur or pick_window(on) or next((w for w in on if w.get("layer") in (None, 0)), None)
+        if win is None:
+            return False
+        self.target = DeskTarget(pid=self.target.pid, window_id=int(win["window_id"]),
+                                 bounds=win.get("bounds"))
+        return True
+
+    async def _poll(self, seconds: float) -> bool:
+        assert self.target is not None
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + seconds
+        while True:
+            if self._adopt(await self.driver.list_windows(self.target.pid)):
+                return True
+            if loop.time() >= deadline:
+                return False
+            await asyncio.sleep(self.POLL_EVERY_S)
+
     async def _require_on_screen(self) -> None:
         """AX and window capture only work on a window that is on screen. A
         minimized or hidden window comes back as ``ax_window_unresolved`` and
-        a blank capture, so fail the step clearly before any model call."""
+        a blank capture, so recover one before any model call:
+
+        a) ``open -b <bundle>`` (the reopen Apple Event: restores a minimized
+           window, creates one if the app has none, switches to its Space);
+        b) the app's own Window menu item for a minimized window;
+        c) give up with a clear message."""
         assert self.target is not None
-        wins = await self.driver.list_windows(self.target.pid)
-        win = next((w for w in wins if int(w.get("window_id", -1)) == self.target.window_id), None)
-        if not win or win.get("is_on_screen") is not True:
-            raise RuntimeError(
-                f"{self.app_name}'s window is minimized, hidden or on another desktop, so the agent "
-                f"cannot see or use it. Open {self.app_name} on this desktop and run again.")
+        pid = self.target.pid
+        wins = await self.driver.list_windows(pid)
+        if self._adopt(wins):
+            return
+        await _run("open", "-b", self.bundle_id)
+        if await self._poll(self.REOPEN_POLL_S):
+            return
+        wins = await self.driver.list_windows(pid)
+        mini = next((w for w in wins if w.get("is_on_screen") is not True
+                     and (w.get("title") or "").strip() and w.get("layer") in (None, 0)), None)
+        if mini is not None:
+            try:
+                await self.driver.call("invoke_menu", {"pid": pid, "path": ["Window", mini["title"]]})
+            except Exception:  # noqa: BLE001 - best effort, the poll decides
+                pass
+            if await self._poll(self.MENU_POLL_S):
+                return
+        name = self.app_name
+        raise RuntimeError(f"Couldn't bring up a {name} window: it stayed minimized or hidden after "
+                           f"reopening it. Open {name} once and run again.")
 
     async def ensure(self, url: str | None = None) -> DeskTarget:
-        t = await super().ensure(url)
-        await self._require_on_screen()
-        return t
+        pid = await self.launch(url)
+        win = pick_window(await self.driver.list_windows(pid))
+        self.target = DeskTarget(pid=pid, window_id=int(win["window_id"]) if win else -1,
+                                 bounds=win.get("bounds") if win else None)
+        # A freshly launched app may need a moment to put its window up.
+        if not await self._poll(self.LAUNCH_POLL_S):
+            await self._require_on_screen()
+        return self.target
 
     async def refresh_window(self) -> DeskTarget:
-        t = await super().refresh_window()
+        assert self.target is not None
+        wins = await self.driver.list_windows(self.target.pid)
+        if not wins:  # the app quit since the last step: start it again
+            return await self.ensure()
+        win = pick_window(wins)
+        if win:
+            self.target = DeskTarget(pid=self.target.pid, window_id=int(win["window_id"]),
+                                     bounds=win.get("bounds"))
         await self._require_on_screen()
-        return t
+        return self.target
 
     async def close(self) -> None:
         return  # the user's app: never quit it

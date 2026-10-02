@@ -24,7 +24,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
-from . import approval, executor, fixtures
+from . import approval, apps, executor, fixtures
 from .dimensions import DIMENSION_KEYS, load_dimensions
 from .events import EventBus
 from .llm import CallRecord, ImageInput, LLMError, StructuredLLM
@@ -350,7 +350,7 @@ def create_app(settings: Settings) -> FastAPI:
                                                     model="fixtures"))
         steps = [{"id": new_id("stp"), "task_id": task_id, "index": i + 1, "title": t,
                   "description": d, "glyph": g, "status": "pending", "edited_from": None,
-                  "revision": 0} for i, (t, d, g) in enumerate(fixtures.STEPS)]
+                  "revision": 0, "app": None} for i, (t, d, g) in enumerate(fixtures.STEPS)]
         await progress(task_id, "scoring",
                        "Preparing oversight view. Scoring actions and placing them on the grid.",
                        0, total)
@@ -371,11 +371,13 @@ def create_app(settings: Settings) -> FastAPI:
             await record_call(task_id, None, rec)
 
         await progress(task_id, "planning", "Generating plan.", 0, 0)
+        catalog = await apps.app_catalog()
         planned = await plan_task(st.llm, prompt, selected_app, on_call=on_call,
-                                  images=load_images(task_id))
+                                  images=load_images(task_id), catalog=catalog)
         steps = [{"id": new_id("stp"), "task_id": task_id, "index": i + 1, "title": p.title,
                   "description": p.description, "glyph": p.glyph, "status": "pending",
-                  "edited_from": None, "revision": 0} for i, p in enumerate(planned)]
+                  "edited_from": None, "revision": 0, "app": p.app}
+                 for i, p in enumerate(planned)]
         total = len(steps)
         await progress(task_id, "scoring",
                        "Preparing oversight view. Scoring actions and placing them on the grid.",
@@ -555,7 +557,10 @@ def create_app(settings: Settings) -> FastAPI:
             store.set_step_status(s["id"], statuses[s["id"]])
 
         exec_steps = [executor.ExecStep(id=s["id"], index=s["index"], title=s["title"],
-                                        description=s["description"]) for s in approved_steps]
+                                        description=s["description"],
+                                        app_name=(s.get("app") or {}).get("name"),
+                                        app_bundle=(s.get("app") or {}).get("bundle_id"))
+                      for s in approved_steps]
         # Defence in depth: the executor asserts this too.
         assert all(e.id in approved_ids for e in exec_steps)
 

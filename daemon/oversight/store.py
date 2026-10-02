@@ -27,7 +27,9 @@ CREATE TABLE IF NOT EXISTS steps (
     glyph TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending',
     edited_from TEXT,
-    revision INTEGER NOT NULL DEFAULT 0
+    revision INTEGER NOT NULL DEFAULT 0,
+    app_name TEXT,
+    app_bundle TEXT
 );
 CREATE INDEX IF NOT EXISTS steps_task ON steps(task_id, idx);
 CREATE TABLE IF NOT EXISTS scores (
@@ -135,6 +137,13 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
+def _app_cols(app: Any) -> tuple[str | None, str | None]:
+    """A step's app as (app_name, app_bundle); None means the agent's browser."""
+    if isinstance(app, dict) and app.get("bundle_id"):
+        return str(app.get("name") or app["bundle_id"]), str(app["bundle_id"])
+    return None, None
+
+
 def new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:12]}"
 
@@ -148,6 +157,15 @@ class Store:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA foreign_keys=ON")
         self.db.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Add columns newer than an existing DB (CREATE TABLE IF NOT EXISTS skips them)."""
+        with self._lock:
+            have = {r["name"] for r in self.db.execute("PRAGMA table_info(steps)")}
+            for col in ("app_name", "app_bundle"):
+                if col not in have:
+                    self.db.execute(f"ALTER TABLE steps ADD COLUMN {col} TEXT")
 
     def _q(self, sql: str, args: tuple = ()) -> list[sqlite3.Row]:
         with self._lock:
@@ -208,9 +226,10 @@ class Store:
                 for s in steps:
                     self.db.execute(
                         "INSERT INTO steps (id, task_id, idx, title, description, glyph, status, "
-                        "edited_from, revision) VALUES (?,?,?,?,?,?,?,?,?)",
+                        "edited_from, revision, app_name, app_bundle) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                         (s["id"], task_id, s["index"], s["title"], s["description"], s["glyph"],
-                         s.get("status", "pending"), s.get("edited_from"), s.get("revision", 0)))
+                         s.get("status", "pending"), s.get("edited_from"), s.get("revision", 0),
+                         *_app_cols(s.get("app"))))
                 for sc in scores:
                     self.db.execute(
                         "INSERT INTO scores (step_id, dimension, label, position, confidence, "
@@ -248,7 +267,9 @@ class Store:
         rows = self._q("SELECT * FROM steps WHERE task_id=? ORDER BY idx", (task_id,))
         return [{"id": r["id"], "task_id": r["task_id"], "index": r["idx"], "title": r["title"],
                  "description": r["description"], "glyph": r["glyph"], "status": r["status"],
-                 "edited_from": r["edited_from"], "revision": r["revision"]} for r in rows]
+                 "edited_from": r["edited_from"], "revision": r["revision"],
+                 "app": ({"name": r["app_name"], "bundle_id": r["app_bundle"]}
+                         if r["app_bundle"] else None)} for r in rows]
 
     def set_step_status(self, step_id: str, status: str) -> None:
         self._x("UPDATE steps SET status=? WHERE id=?", (status, step_id))

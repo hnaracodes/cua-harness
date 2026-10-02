@@ -13,7 +13,7 @@ from dataclasses import dataclass
 
 from . import approval
 from .llm import ImageInput, LLMError, StructuredLLM
-from .planner import GLYPHS, MAX_STEPS, MIN_STEPS
+from .planner import GLYPHS, MAX_STEPS, MIN_STEPS, apps_note, resolve_step_app
 from .store import new_id
 
 REVISE_SCHEMA = {
@@ -28,8 +28,9 @@ REVISE_SCHEMA = {
                     "title": {"type": "string"},
                     "description": {"type": "string"},
                     "glyph": {"type": "string", "enum": list(GLYPHS)},
+                    "app": {"type": ["string", "null"]},
                 },
-                "required": ["keep_step_id", "title", "description", "glyph"],
+                "required": ["keep_step_id", "title", "description", "glyph", "app"],
                 "additionalProperties": False,
             },
         }
@@ -56,6 +57,8 @@ revised plan, in execution order, {MIN_STEPS} to {MAX_STEPS} steps.
   (buying, sending, deleting) into a safer step.
 - title: imperative, at most 8 words. description: one or two sentences.
 - glyph: pick from {", ".join(GLYPHS)}.
+- app: keep a kept step's [app: ...] as it is. Otherwise null unless a list of installed
+  apps is given below; then follow its rules.
 Respond with the JSON object only."""
 
 
@@ -65,6 +68,7 @@ class RevisedStep:
     title: str
     description: str
     glyph: str
+    app: dict | None = None
 
 
 @dataclass
@@ -76,7 +80,8 @@ class Merge:
     unchanged: set[str]
 
 
-def validate_revision(data: dict, current_ids: set[str]) -> list[RevisedStep]:
+def validate_revision(data: dict, current_ids: set[str],
+                      catalog: Sequence[dict] = ()) -> list[RevisedStep]:
     steps = data.get("steps")
     if not isinstance(steps, list):
         raise LLMError("revision has no steps array")
@@ -91,7 +96,7 @@ def validate_revision(data: dict, current_ids: set[str]) -> list[RevisedStep]:
         keep = s.get("keep_step_id")
         keep = keep if isinstance(keep, str) and keep in current_ids else None
         glyph = s.get("glyph") if s.get("glyph") in GLYPHS else "generic"
-        out.append(RevisedStep(keep, title, desc, glyph))
+        out.append(RevisedStep(keep, title, desc, glyph, resolve_step_app(s.get("app"), catalog)))
     return out
 
 
@@ -115,15 +120,20 @@ def render_current(steps: list[dict],
     def status(s: dict) -> str:
         return "approved" if s["status"] == "pending" and s["id"] in inside else s["status"]
 
-    return "\n".join(f"- id={s['id']} [{status(s)}]{' [edited]' if s.get('edited_from') else ''} "
-                     f"{s['index']}. {s['title']}: {s['description']}"
+    def app(s: dict) -> str:
+        a = s.get("app")
+        return f" [app: {a['name']}]" if isinstance(a, dict) and a.get("name") else ""
+
+    return "\n".join(f"- id={s['id']} [{status(s)}]{' [edited]' if s.get('edited_from') else ''}"
+                     f"{app(s)} {s['index']}. {s['title']}: {s['description']}"
                      for s in sorted(steps, key=lambda s: s["index"]))
 
 
 async def replan(llm: StructuredLLM, prompt: str, current_steps: list[dict],
                  instruction: str | None, images: Sequence[ImageInput] = (),
                  on_call=None, *, positions: Mapping[str, Mapping[str, float]] | None = None,
-                 boundaries: Sequence[Mapping] | None = None) -> list[RevisedStep]:
+                 boundaries: Sequence[Mapping] | None = None,
+                 catalog: Sequence[dict] = ()) -> list[RevisedStep]:
     """Validated revised plan. Retries once on invalid output; `on_call(record)` is awaited
     after every LLM call for cost accounting (like planner.plan_task). `positions` and
     `boundaries` (the stored ones) let steps inside a polygon read as [approved]."""
@@ -131,10 +141,11 @@ async def replan(llm: StructuredLLM, prompt: str, current_steps: list[dict],
             f"{render_current(current_steps, positions, boundaries)}\n\nInstruction from the user: "
             f"{instruction or '(none: change only what the decisions above require)'}")
     ids = {s["id"] for s in current_steps}
+    system = SYSTEM + apps_note(catalog) if catalog else SYSTEM
     last: Exception | None = None
     for _attempt in range(2):
         try:
-            data, rec = await llm.call(scope="plan", system=SYSTEM, user=user,
+            data, rec = await llm.call(scope="plan", system=system, user=user,
                                        schema=REVISE_SCHEMA, schema_name="revise",
                                        effort="medium", max_tokens=8000, images=images)
         except LLMError as e:
@@ -145,7 +156,7 @@ async def replan(llm: StructuredLLM, prompt: str, current_steps: list[dict],
         if on_call:
             await on_call(rec)
         try:
-            return validate_revision(data, ids)
+            return validate_revision(data, ids, catalog)
         except LLMError as e:
             last = e
     raise LLMError(f"replanner failed: {last}")
@@ -160,7 +171,8 @@ def fixture_replan(current_steps: list[dict], instruction: str | None) -> list[R
     `drop N` drops step N, `add <title>` appends a new step; any other text is appended
     to the last non-removed step's title as ' (revised: <text>)'."""
     cur = sorted(current_steps, key=lambda s: s["index"])
-    out = [RevisedStep(s["id"], s["title"], s["description"], s["glyph"]) for s in cur]
+    out = [RevisedStep(s["id"], s["title"], s["description"], s["glyph"], s.get("app"))
+           for s in cur]
     added: list[RevisedStep] = []
     drops: set[int] = set()
     free: list[str] = []
@@ -179,7 +191,7 @@ def fixture_replan(current_steps: list[dict], instruction: str | None) -> list[R
             i = active[-1]
             r = out[i]
             out[i] = RevisedStep(r.keep_step_id, f"{r.title} (revised: {'; '.join(free)})",
-                                 r.description, r.glyph)
+                                 r.description, r.glyph, r.app)
     kept = [r for r, s in zip(out, cur) if s["index"] not in drops]
     return kept + added
 
@@ -204,14 +216,14 @@ def merge_revision(task_id: str, current_steps: list[dict],
                 unchanged.add(old["id"])
             else:
                 out.append({**old, "index": i, "title": r.title, "description": r.description,
-                            "glyph": r.glyph, "status": "pending",
+                            "glyph": r.glyph, "app": r.app, "status": "pending",
                             "revision": int(old.get("revision", 0)) + 1})
                 changed.add(old["id"])
         else:
             sid = new_id("stp")
             out.append({"id": sid, "task_id": task_id, "index": i, "title": r.title,
-                        "description": r.description, "glyph": r.glyph, "status": "pending",
-                        "edited_from": None, "revision": 0})
+                        "description": r.description, "glyph": r.glyph, "app": r.app,
+                        "status": "pending", "edited_from": None, "revision": 0})
             added.add(sid)
     dropped = set(by_id) - used
     return Merge(out, changed, added, dropped, unchanged)
