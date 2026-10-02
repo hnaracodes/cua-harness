@@ -1,0 +1,4 @@
+.screen { display: flex; height: 100%; min-height: 0; }
+.chat { width: var(--chat-w); flex: none; display: flex; flex-direction: column; border-right: 1px solid var(--line); min-height: 0; }
+.dock { padding: 12px 16px 16px; }
+.workspace { flex: 1; min-width: 0; min-height: 0; }
