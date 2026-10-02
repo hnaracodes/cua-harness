@@ -300,3 +300,128 @@ def test_reset_cua_cache_clears_cached_probe():
     settings_mod._CUA_CACHE["value"] = (True, "running", "ok")
     settings_mod.reset_cua_cache()
     assert settings_mod._CUA_CACHE["value"] is None
+
+
+from fastapi.testclient import TestClient  # noqa: E402
+
+from oversight.api import create_app  # noqa: E402
+from oversight.settings import Settings  # noqa: E402
+
+
+@pytest.fixture
+def client(tmp_path):
+    s = Settings(fixtures=True, exec_mode="simulated", data_dir=tmp_path)
+    with TestClient(create_app(s)) as c:
+        yield c
+
+
+def _use(client, env):
+    client.app.state.setup_env = env
+    return client.app.state.oversight
+
+
+def test_setup_status_shape(client):
+    env, _ = make_env(outputs=DRIVER_OK)
+    _use(client, env)
+    got = client.get("/setup/status").json()
+    assert set(got) == {"platform", "key", "driver", "permissions", "self_test", "plan_only",
+                        "complete"}
+    assert got["permissions"] == {"accessibility": "granted", "screen_recording": "denied"}
+    assert got["key"]["source"] == "none" and got["complete"] is False
+
+
+def test_put_key_success_stores_tests_and_counts_cost(client):
+    env, _ = make_env()
+    st = _use(client, env)
+    r = client.put("/setup/key", json={"provider": "anthropic", "key": "  sk-ant-good  "})
+    assert r.status_code == 200 and r.json() == {"ok": True, "error": None}
+    assert "sk-ant-good" not in r.text  # never echoed
+    assert env.environ["ANTHROPIC_API_KEY"] == "sk-ant-good"
+    assert st.store.get_setting("key_tested") == {"anthropic": True}
+    assert st.settings.api_key_present is True
+    assert st.store.total_cost() > 0  # the 1-token test is a counted LLM call
+
+
+def test_put_key_rejected_stores_nothing(client):
+    env, _ = make_env(key_ok=False)
+    st = _use(client, env)
+    r = client.put("/setup/key", json={"provider": "anthropic", "key": "sk-bad"})
+    assert r.json() == {"ok": False, "error": "That key was rejected (401)."}
+    assert "ANTHROPIC_API_KEY" not in env.environ
+    assert st.store.get_setting("key_tested", {}) == {}
+
+
+def test_put_key_validation(client):
+    _use(client, make_env()[0])
+    assert client.put("/setup/key", json={"provider": "gemini", "key": "x"}).status_code == 400
+    assert client.put("/setup/key", json={"provider": "openai", "key": "   "}).json() == {
+        "ok": False, "error": "The key is empty."}
+
+
+def test_permissions_open_and_driver_endpoints(client):
+    env, calls = make_env(outputs={("/bin/bash", "-c"): (0, "installed\n", ""), **DRIVER_OK})
+    _use(client, env)
+    assert client.post("/setup/permissions/open", json={"which": "accessibility"}).json() == {"ok": True}
+    assert ["open", setup.PANES["accessibility"]] in calls
+    assert client.post("/setup/permissions/open", json={"which": "camera"}).status_code == 400
+    inst = client.post("/setup/driver/install", json={}).json()
+    assert inst == {"ok": True, "version": "0.32.0", "log_tail": "installed"}
+    assert client.post("/setup/driver/start", json={}).json() == {"ok": True, "error": None}
+
+
+def test_self_test_endpoint_records_pass(client):
+    env, _ = make_env(outputs=DRIVER_OK)
+    st = _use(client, env)
+    r = client.post("/setup/self-test", json={}).json()
+    assert r["ok"] is True
+    assert st.store.get_setting("self_test_passed_at")
+    assert client.get("/setup/status").json()["self_test"]["passed_at"]
+
+
+def test_complete_and_plan_only_reach_health(client):
+    _use(client, make_env()[0])
+    assert client.get("/health").json()["setup_complete"] is False
+    assert client.post("/setup/complete", json={}).json() == {"ok": True}
+    assert client.get("/health").json()["setup_complete"] is True
+    got = client.put("/settings", json={"plan_only": True}).json()
+    assert got["plan_only"] is True and client.get("/health").json()["plan_only"] is True
+
+
+def test_settings_get_put_and_validation(client):
+    st = _use(client, make_env()[0])
+    got = client.get("/settings").json()
+    assert got == {"provider": "anthropic", "model": "claude-sonnet-5-5", "plan_only": False,
+                   "models": setup.MODELS}
+    assert client.put("/settings", json={"model": "gpt-5.5"}).status_code == 400
+    assert client.put("/settings", json={"provider": "gemini"}).status_code == 400
+    sw = client.put("/settings", json={"provider": "openai"}).json()
+    assert (sw["provider"], sw["model"]) == ("openai", "gpt-5.5")
+    assert st.store.get_setting("provider") == "openai" and st.settings.model == "gpt-5.5"
+
+
+def test_persisted_provider_and_model_applied_at_startup(tmp_path):
+    pre = Store(tmp_path / "oversight.db")
+    pre.set_setting("provider", "openai")
+    pre.set_setting("model", "gpt-5.5")
+    pre.db.close()
+    s = Settings(fixtures=False, exec_mode="simulated", data_dir=tmp_path)
+    app = create_app(s)
+    assert (s.provider, s.model) == ("openai", "gpt-5.5")
+    assert app.state.oversight.llm.provider == "openai"
+
+
+def test_review_focus_non_macos_and_no_keychain(client):
+    """Review Focus: Linux/Windows has no TCC panes, and a missing keychain backend
+    degrades to env keys with a visible warning instead of failing setup."""
+    env, calls = make_env(platform="linux", keyring=FakeKeyring(broken=True), outputs=DRIVER_OK)
+    env.environ["ANTHROPIC_API_KEY"] = "sk-env"
+    _use(client, env)
+    got = client.get("/setup/status").json()
+    assert got["platform"] == "linux"
+    assert got["permissions"] == {"accessibility": "n/a", "screen_recording": "n/a"}
+    assert got["key"]["source"] == "env" and got["key"]["present"] is True
+    assert got["key"]["warning"] == setup.KEYCHAIN_WARNING
+    assert not any(c[:3] == [BIN, "permissions", "status"] for c in calls)
+    assert client.post("/setup/permissions/open", json={"which": "accessibility"}).json() == {"ok": False}
+    r = client.put("/setup/key", json={"provider": "anthropic", "key": "sk-new"}).json()
+    assert r == {"ok": True, "error": None} and env.environ["ANTHROPIC_API_KEY"] == "sk-new"
