@@ -223,3 +223,42 @@ def test_status_complete_rules(tmp_path):
     assert got["plan_only"] is True and got["complete"] is True  # key + plan-only
     store.set_setting("plan_only", False)
     assert asyncio.run(setup.status(env, store, s))["complete"] is False  # screen_recording denied
+
+
+def test_self_test_passes_on_agent_desk_scratch_page():
+    desk = FakeDesk()
+    env, _ = make_env(desk=desk)
+    ok, detail = asyncio.run(setup.self_test(env))
+    assert ok is True, detail
+    assert desk.urls == [setup.SELF_TEST_URL] and desk.typed == "hello"
+    assert "own browser window" in detail
+
+
+@pytest.mark.parametrize("desk, needle", [
+    (FakeDesk(png=None), "Screen Recording"),
+    (FakeDesk(echo=False), "read the typed text back"),
+    (FakeDesk(has_box=False), "Accessibility"),
+])
+def test_self_test_names_what_failed(desk, needle):
+    env, _ = make_env(desk=desk)
+    ok, detail = asyncio.run(setup.self_test(env))
+    assert ok is False and needle in detail
+
+
+def test_self_test_stops_before_the_desk_when_driver_not_ready_or_missing():
+    desk = FakeDesk()
+    env, _ = make_env(desk=desk, driver=FakeDriver((False, "permissions_pending: grant CuaDriver")))
+    assert asyncio.run(setup.self_test(env)) == (False, "permissions_pending: grant CuaDriver")
+    assert desk.urls == []
+    missing, _ = make_env(binary=None)
+    assert asyncio.run(setup.self_test(missing)) == (False, "cua-driver is not installed.")
+
+
+def test_self_test_reports_driver_exceptions_instead_of_raising():
+    class Exploding(FakeDesk):
+        async def ensure(self, url=None):
+            raise RuntimeError("agent browser (pid 1) has no window")
+
+    env, _ = make_env(desk=Exploding())
+    ok, detail = asyncio.run(setup.self_test(env))
+    assert ok is False and "has no window" in detail

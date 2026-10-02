@@ -285,3 +285,39 @@ async def status(env: SetupEnv, store: Any, settings: Any) -> dict:
     return {"platform": env.platform, "key": key, "driver": driver, "permissions": perms,
             "self_test": {"passed_at": passed}, "plan_only": plan_only,
             "complete": bool(key["present"] and (plan_only or agent_ok))}
+
+
+# ------------------------------------------------------------------ self-test
+
+async def self_test(env: SetupEnv) -> tuple[bool, str]:
+    """Open a scratch page on the AGENT'S OWN browser desk (never the user's apps),
+    type "hello", capture that window, read the value back. Each failure names the
+    permission that most likely caused it, so the wizard can point at the fix."""
+    binary = env.find_binary()
+    if not binary:
+        return False, "cua-driver is not installed."
+    drv = env.make_driver(binary)
+    ok, detail = await drv.ready()
+    if not ok:
+        return False, detail
+    desk = env.make_desk(drv)
+    try:
+        await desk.ensure(SELF_TEST_URL)
+        state = await desk.observe()
+        box = next((e for e in state.elements
+                    if e.get("role") in ("textbox", "textarea") and e.get("element_token")), None)
+        if box is None:
+            return False, ("The agent's browser opened, but the scratch text box wasn't readable "
+                           "(Accessibility).")
+        await desk.type(box["element_token"], SELF_TEST_TEXT, replace=True)
+        await env.sleep(0.3)
+        after = await desk.observe()
+    except Exception as e:  # driver/browser failure: report it, never raise into the API
+        return False, f"{type(e).__name__}: {e}"
+    if after.png is None:
+        return False, ("Typed into the scratch page but couldn't capture its window "
+                       "(Screen Recording).")
+    if not any(SELF_TEST_TEXT in str(e.get("value") or "") for e in after.elements):
+        return False, "Captured the window, but couldn't read the typed text back."
+    return True, (f'Typed "{SELF_TEST_TEXT}" into the agent\'s own browser window, captured '
+                  "that window, and read the text back.")
