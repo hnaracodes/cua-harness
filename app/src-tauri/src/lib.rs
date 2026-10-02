@@ -1,5 +1,7 @@
 // The shell is thin glue: all logic lives in the Python daemon, the webview
 // renders and captures gestures.
+mod supervisor;
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
