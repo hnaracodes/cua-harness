@@ -135,3 +135,134 @@ def test_replan_retries_once_then_fails():
     llm = _FakeLLM([{"steps": []}, {"steps": []}])
     with pytest.raises(LLMError, match="replanner failed"):
         asyncio.run(replan(llm, "t", cur, None))
+
+
+from fastapi.testclient import TestClient
+
+from oversight.api import ActiveRun, create_app
+from oversight.routes import revise as revise_routes
+from oversight.settings import Settings
+
+OTHER = ("financial_commitment", "verifiability")
+
+
+@pytest.fixture
+def client(tmp_path):
+    s = Settings(fixtures=True, exec_mode="simulated", data_dir=tmp_path)
+    with TestClient(create_app(s)) as c:
+        yield c
+
+
+def _plan(client):
+    tid = client.post("/task", json={"prompt": fixtures.TASK_PROMPT}).json()["task_id"]
+    body = client.post(f"/task/{tid}/plan").json()
+    return tid, {s["index"]: s for s in body["steps"]}, body["scores"]
+
+
+def _events(client, tid, kind):
+    return [e for e in client.app.state.oversight.store.get_events(tid) if e["kind"] == kind]
+
+
+def test_repropose_preserves_state(client):
+    # Review Focus #3: mixed polygon/check/remove state on two axis pairs.
+    tid, steps, scores = _plan(client)
+    x, y = fixtures.DEMO_AXES
+    client.put(f"/task/{tid}/boundary", json={"x_dim": x, "y_dim": y, "polygon": fixtures.DEMO_POLYGON})
+    client.put(f"/task/{tid}/boundary", json={"x_dim": OTHER[0], "y_dim": OTHER[1],
+                                              "polygon": [[0, 0], [0.3, 0], [0.3, 0.3]]})
+    client.post(f"/task/{tid}/decision", json={"step_id": steps[3]["id"], "action": "check", "source": "step_list"})
+    client.post(f"/task/{tid}/decision", json={"step_id": steps[5]["id"], "action": "remove", "source": "step_list"})
+
+    r = client.post(f"/task/{tid}/repropose", json={"instruction": "drop 6; add Ask the party group for a date"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["revision"] == 1 and body["task_id"] == tid
+    new = {s["index"]: s for s in body["steps"]}
+    assert [new[i]["id"] for i in range(1, 6)] == [steps[i]["id"] for i in range(1, 6)]
+    assert steps[6]["id"] not in {s["id"] for s in body["steps"]}
+    assert new[6]["title"] == "Ask the party group for a date" and new[6]["status"] == "pending"
+    assert new[3]["status"] == "approved" and new[5]["status"] == "removed"
+
+    before = sorted((s for s in scores if s["step_id"] == steps[1]["id"]), key=lambda s: s["dimension"])
+    after = sorted((s for s in body["scores"] if s["step_id"] == steps[1]["id"]), key=lambda s: s["dimension"])
+    assert before == after
+    assert len([s for s in body["scores"] if s["step_id"] == new[6]["id"]]) == 10
+
+    pairs = {(b["x_dim"], b["y_dim"]) for b in client.app.state.oversight.store.get_boundaries(tid)}
+    assert pairs == {(x, y), OTHER}
+
+    ev = _events(client, tid, "plan_revised")[-1]["payload"]
+    assert ev == {"revision": 1, "instruction": "drop 6; add Ask the party group for a date",
+                  "changed_step_ids": [], "added_step_ids": [new[6]["id"]],
+                  "dropped_step_ids": [steps[6]["id"]]}
+    decs = [(d["step_id"], d["action"], d["source"]) for d in client.get(f"/task/{tid}").json()["decisions"]]
+    assert (steps[6]["id"], "revise", "chat") in decs and (new[6]["id"], "revise", "chat") in decs
+    stages = [e["payload"]["stage"] for e in _events(client, tid, "plan_progress")]
+    assert stages[-3:] == ["planning", "scoring", "done"]
+
+    assert client.post(f"/task/{tid}/repropose", json={"instruction": None}).json()["revision"] == 2
+
+
+def test_repropose_rewrite_goes_pending_and_rescored(client):
+    tid, steps, _ = _plan(client)
+    client.post(f"/task/{tid}/decision", json={"step_id": steps[6]["id"], "action": "check", "source": "step_list"})
+    body = client.post(f"/task/{tid}/repropose", json={"instruction": "only message the party group"}).json()
+    s6 = next(s for s in body["steps"] if s["id"] == steps[6]["id"])
+    assert s6["title"].endswith("(revised: only message the party group)")
+    assert (s6["status"], s6["revision"]) == ("pending", 1)
+    ev = _events(client, tid, "plan_revised")[-1]["payload"]
+    assert ev["changed_step_ids"] == [steps[6]["id"]]
+
+
+def test_repropose_errors(client):
+    assert client.post("/task/tsk_nope/repropose", json={"instruction": "x"}).status_code == 404
+    tid = client.post("/task", json={"prompt": "p"}).json()["task_id"]
+    assert client.post(f"/task/{tid}/repropose", json={"instruction": "x"}).status_code == 409
+
+    tid, _steps_, _ = _plan(client)
+    st = client.app.state.oversight
+    st.active_runs[tid] = ActiveRun(run_id="run_x", stop=asyncio.Event())
+    assert client.post(f"/task/{tid}/repropose", json={"instruction": "x"}).status_code == 409
+    del st.active_runs[tid]
+
+    lock = asyncio.Lock()
+    asyncio.run(lock.acquire())
+    st.plan_locks[tid] = lock
+    assert client.post(f"/task/{tid}/repropose", json={"instruction": "x"}).status_code == 409
+    lock.release()
+
+
+def test_repropose_llm_failure_is_502_and_reported(client, monkeypatch):
+    tid, steps, _ = _plan(client)
+
+    def boom(current, instruction):
+        raise LLMError("model refused the request")
+
+    monkeypatch.setattr(revise_routes, "fixture_replan", boom)
+    r = client.post(f"/task/{tid}/repropose", json={"instruction": "x"})
+    assert r.status_code == 502 and "model refused" in r.json()["error"]
+    assert _events(client, tid, "plan_progress")[-1]["payload"]["stage"] == "error"
+    assert [s["id"] for s in client.get(f"/task/{tid}").json()["steps"]] == [steps[i]["id"] for i in range(1, 7)]
+
+
+def test_repropose_live_path_uses_replan_with_images(client, monkeypatch):
+    tid, steps, _ = _plan(client)
+    seen = {}
+
+    async def fake_replan(llm, prompt, current, instruction, images=(), on_call=None):
+        seen.update(prompt=prompt, instruction=instruction, images=list(images), n=len(current))
+        return [RevisedStep(s["id"], s["title"], s["description"], s["glyph"])
+                for s in sorted(current, key=lambda s: s["index"])]
+
+    monkeypatch.setattr(revise_routes, "replan", fake_replan)
+    client.app.state.oversight.settings.fixtures = False
+    client.app.state.oversight.llm = object()  # never called: replan is faked, nothing rescored
+    r = client.post(f"/task/{tid}/repropose", json={"instruction": "keep it"})
+    client.app.state.oversight.settings.fixtures = True
+    assert r.status_code == 200, r.text
+    assert seen == {"prompt": fixtures.TASK_PROMPT, "instruction": "keep it", "images": [], "n": 6}
+
+
+def test_revise_routes_registered(client):
+    paths = {getattr(r, "path", "") for r in client.app.routes}
+    assert {"/task/{task_id}/repropose", "/task/{task_id}/step/{step_id}"} <= paths
