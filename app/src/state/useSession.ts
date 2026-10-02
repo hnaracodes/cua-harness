@@ -15,7 +15,7 @@ export interface SessionActions {
   editStep(stepId: string, patch: { title?: string; description?: string }): Promise<void>;
   check(stepId: string, on: boolean, source?: DecisionSource): void;
   remove(stepId: string, source?: DecisionSource): void;
-  restore(stepId: string): void;
+  restore(stepId: string, source?: DecisionSource): void;
   approveAll(): void;
   select(stepId: string | null): void;
   setAxes(x: string, y: string): void;
@@ -165,9 +165,9 @@ export function useSession(api: DaemonApi | null): Session {
         dispatch({ type: "remove", stepId });
         void decide(stepId, "remove", source);
       },
-      restore(stepId) {
+      restore(stepId, source = "step_list") {
         dispatch({ type: "restore", stepId });
-        void decide(stepId, "restore", "step_list");
+        void decide(stepId, "restore", source);
       },
       approveAll() {
         const s = ref.current;
