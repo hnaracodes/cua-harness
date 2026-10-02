@@ -189,11 +189,15 @@ class AgentDesk:
             await asyncio.sleep(0.25)
         raise RuntimeError("agent Chrome did not start")
 
+    async def launch(self, url: str | None = None) -> int:
+        """Start (or reuse) this desk's app. Returns the pid."""
+        return await self.launch_chrome(url)
+
     async def _pid_matches(self, pid: int) -> bool:
         return pid in await chrome_pids_for_profile(self.profile_dir if self.own_browser_profile else None)
 
     async def ensure(self, url: str | None = None) -> DeskTarget:
-        pid = await self.launch_chrome(url)
+        pid = await self.launch(url)
         win = None
         for _ in range(40):
             win = pick_window(await self.driver.list_windows(pid))
@@ -249,6 +253,64 @@ class AgentDesk:
             return
         for pid in await chrome_pids_for_profile(self.profile_dir):
             await _run("kill", str(pid))
+
+
+# ---------------------------------------------------------------------------
+# Native app desks
+# ---------------------------------------------------------------------------
+
+#: Native apps a step can be routed to: (bundle id, display name).
+MESSAGES_APP = ("com.apple.MobileSMS", "Messages")
+NOTES_APP = ("com.apple.Notes", "Notes")
+
+_MESSAGES_WORDS = re.compile(r"\b(imessages?|messages)\b")
+_MESSAGING_WORDS = re.compile(r"\b(message|messages|text|recipients?|contacts?|send|chat)\b")
+_NOTES_WORDS = re.compile(r"\b(apple notes|notes app|notes)\b")
+
+
+def route_app(task_prompt: str, title: str, description: str) -> tuple[str, str] | None:
+    """Which native app a step runs in, or None for the browser.
+
+    A step goes to Messages when it names Messages/iMessage, or when it is a
+    messaging step (message, recipient, send...) in a task that asked for
+    iMessage. That covers "Draft a short party message to Amogh" in a task
+    that said "via iMessages", which never names the app itself."""
+    step = f"{title} {description}".lower()
+    task = task_prompt.lower()
+    if _MESSAGES_WORDS.search(step):
+        return MESSAGES_APP
+    if _MESSAGING_WORDS.search(step) and _MESSAGES_WORDS.search(task):
+        return MESSAGES_APP
+    if _NOTES_WORDS.search(step):
+        return NOTES_APP
+    return None
+
+
+class AppDesk(AgentDesk):
+    """One of the user's own native apps (Messages, Notes), driven in the
+    background through cua-driver: launched with ``launch_app`` (never brought
+    to the front), observed window-scoped (AX tree + window screenshot), acted
+    on with AX actions and background input. The executor never quits it."""
+
+    kind = "app"
+
+    def __init__(self, driver: CuaDriver, bundle_id: str, app_name: str) -> None:
+        super().__init__(driver, own_browser_profile=False)
+        self.bundle_id = bundle_id
+        self.app_name = app_name
+
+    async def launch(self, url: str | None = None) -> int:
+        r = await self.driver.launch_app(bundle_id=self.bundle_id)
+        pid = r.get("pid")
+        if isinstance(pid, int):
+            return pid
+        _, out, _ = await _run("pgrep", "-x", self.app_name)
+        if out.strip():
+            return int(out.split()[0])
+        raise RuntimeError(f"{self.app_name} did not start")
+
+    async def close(self) -> None:
+        return  # the user's app: never quit it
 
 
 # ---------------------------------------------------------------------------
