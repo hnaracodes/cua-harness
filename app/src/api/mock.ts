@@ -4,11 +4,14 @@
 // VITE_MOCK=1. It owns its own approval check for /run, exactly like the
 // daemon, so a UI/daemon disagreement shows up as a 409 here too.
 
-import { classify, indexScores, pairKey } from "../lib/approval";
+import { classify, indexScores, pairKey, splitPairKey } from "../lib/approval";
 import type { PolygonMap } from "../lib/approval";
 import type { DaemonApi, EventListener } from "./client";
+import { HttpError } from "./errors";
 import { FIXTURE_DIMENSIONS, FIXTURE_MODEL, FIXTURE_STEPS } from "./fixtures";
 import type {
+  AppSettings,
+  Attachment,
   BoundaryBody,
   DecisionBody,
   EventKind,
@@ -16,8 +19,11 @@ import type {
   OversightEvent,
   PlanResponse,
   RunBody,
+  ImageMime,
+  RunRecord,
   RunResult,
   Score,
+  SetupStatus,
   Step,
 } from "./types";
 
@@ -32,6 +38,10 @@ interface MockTask {
   listeners: Set<EventListener>;
   stop: boolean;
   running: boolean;
+  createdAt: string;
+  attachments: Attachment[];
+  runs: RunRecord[];
+  revision: number;
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -39,6 +49,13 @@ const rid = (p: string) => `${p}_${Math.random().toString(36).slice(2, 10)}`;
 
 export function createMockDaemon(): DaemonApi {
   const tasks = new Map<string, MockTask>();
+  const blobs = new Map<string, { att: Attachment; url: string }>();
+  const settings: AppSettings = {
+    provider: "anthropic",
+    model: "claude-sonnet-5-5",
+    plan_only: false,
+    models: { anthropic: ["claude-sonnet-5-5", "claude-opus-5-5"], openai: ["gpt-5.5"] },
+  };
   let costTotal = 0;
   let seq = 0;
 
@@ -86,6 +103,8 @@ export function createMockDaemon(): DaemonApi {
         fixtures: true,
         exec_mode: "simulated",
         cost_usd_total: costTotal,
+        setup_complete: true,
+        plan_only: settings.plan_only,
         status_line: `Mock daemon (in-browser fixtures). cua-driver simulated, model ${FIXTURE_MODEL}.`,
       };
     },
@@ -94,19 +113,17 @@ export function createMockDaemon(): DaemonApi {
       return FIXTURE_DIMENSIONS.map((d) => ({ ...d, labels: [...d.labels], anchors: [...d.anchors] }));
     },
 
-    async createTask(prompt: string) {
+    async createTask(prompt: string, _selectedApp?: string | null, attachmentIds: string[] = []) {
+      if (attachmentIds.length > 4) throw new HttpError(400, { error: "at most 4 images per task" });
+      const unknown = attachmentIds.filter((a) => !blobs.has(a));
+      if (unknown.length) throw new HttpError(400, { error: "unknown attachment ids", unknown });
       const id = rid("tsk");
       tasks.set(id, {
-        id,
-        prompt,
-        steps: [],
-        scores: [],
-        boundaries: {},
-        decisions: [],
-        events: [],
-        listeners: new Set(),
-        stop: false,
-        running: false,
+        id, prompt, steps: [], scores: [], boundaries: {}, decisions: [], events: [],
+        listeners: new Set(), stop: false, running: false,
+        createdAt: new Date().toISOString(),
+        attachments: attachmentIds.map((a) => blobs.get(a)!.att),
+        runs: [], revision: 0,
       });
       return { task_id: id };
     },
@@ -184,6 +201,8 @@ export function createMockDaemon(): DaemonApi {
       const runId = rid("run");
       t.stop = false;
       t.running = true;
+      t.runs.push({ id: runId, task_id: t.id, status: "running", exec_mode: "simulated", approved: expected,
+        removed: [...body.removed_step_ids], started_at: new Date().toISOString(), finished_at: null, final: null });
       void simulateRun(t, runId, new Set(expected), new Set(body.removed_step_ids));
       return { ok: true, run_id: runId };
     },
@@ -191,6 +210,77 @@ export function createMockDaemon(): DaemonApi {
     async stop(taskId: string) {
       getTask(taskId).stop = true;
       return { stopped: true };
+    },
+
+    async listTasks() {
+      return [...tasks.values()].reverse().map((t) => ({ id: t.id, prompt: t.prompt, created_at: t.createdAt, step_count: t.steps.length }));
+    },
+    async getTask(taskId: string) {
+      const t = getTask(taskId);
+      return {
+        task: { id: t.id, prompt: t.prompt, selected_app: null, created_at: t.createdAt, mode: "fixtures", attachments: t.attachments },
+        steps: t.steps.map((s) => ({ ...s })),
+        scores: t.scores.map((s) => ({ ...s })),
+        boundaries: Object.entries(t.boundaries).map(([k, polygon]) => {
+          const [x_dim, y_dim] = splitPairKey(k);
+          return { x_dim, y_dim, polygon };
+        }),
+        runs: t.runs.map((r) => ({ ...r })),
+        cost_usd: costTotal,
+      };
+    },
+    async uploadAttachment(file: Blob) {
+      const mime = file.type as ImageMime;
+      if (!["image/png", "image/jpeg", "image/webp"].includes(mime))
+        throw new HttpError(400, { error: `Unsupported image type ${file.type || "unknown"}. Use PNG, JPEG or WebP.` });
+      if (file.size === 0) throw new HttpError(400, { error: "The file is empty." });
+      if (file.size > 5 * 1024 * 1024) throw new HttpError(413, { error: "Images must be 5 MB or smaller." });
+      const att: Attachment = { attachment_id: rid("att"), mime, bytes: file.size };
+      blobs.set(att.attachment_id, { att, url: URL.createObjectURL(file) });
+      return att;
+    },
+    attachmentUrl: (id: string) => blobs.get(id)?.url ?? "",
+    async repropose(taskId: string, instruction: string | null) {
+      const t = getTask(taskId);
+      t.revision += 1;
+      emit(t, "plan_progress", { stage: "planning", message: "Revising the plan.", done: 0, total: t.steps.length });
+      await sleep(400);
+      emit(t, "plan_revised", { revision: t.revision, instruction, changed_step_ids: [], added_step_ids: [], dropped_step_ids: [] });
+      emit(t, "plan_progress", { stage: "done", message: "Plan revised.", done: t.steps.length, total: t.steps.length });
+      return { task_id: taskId, steps: t.steps.map((s) => ({ ...s })), scores: t.scores.map((s) => ({ ...s })), revision: t.revision };
+    },
+    async editStep(taskId: string, stepId: string, patch: { title?: string; description?: string }) {
+      const t = getTask(taskId);
+      const s = t.steps.find((x) => x.id === stepId);
+      if (!s) throw new HttpError(404, { error: "step not found in task" });
+      if (!patch.title?.trim() && !patch.description?.trim()) throw new HttpError(400, { error: "nothing to change" });
+      s.edited_from = s.edited_from ?? s.title;
+      if (patch.title?.trim()) s.title = patch.title.trim();
+      if (patch.description?.trim()) s.description = patch.description.trim();
+      return { step: { ...s }, scores: t.scores.filter((x) => x.step_id === stepId).map((x) => ({ ...x })) };
+    },
+    frameUrl: () => "",
+    async setupStatus(): Promise<SetupStatus> {
+      return {
+        platform: "macos",
+        key: { provider: settings.provider, present: true, source: "env", tested: true, warning: null },
+        driver: { installed: true, version: "mock", running: true },
+        permissions: { accessibility: "granted", screen_recording: "granted" },
+        self_test: { passed_at: new Date().toISOString() },
+        plan_only: settings.plan_only,
+        complete: true,
+      };
+    },
+    async setKey() { return { ok: true, error: null }; },
+    async installDriver() { return { ok: true, version: "mock", log_tail: "" }; },
+    async startDriver() { return { ok: true, error: null }; },
+    async openPermission() { return { ok: true }; },
+    async selfTest() { return { ok: true, detail: "mock self-test passed" }; },
+    async completeSetup() { return { ok: true }; },
+    async getSettings() { return { ...settings, models: { ...settings.models } }; },
+    async putSettings(patch: Partial<Pick<AppSettings, "provider" | "model" | "plan_only">>) {
+      Object.assign(settings, patch);
+      return { ...settings, models: { ...settings.models } };
     },
 
     subscribe(taskId: string, since: number, onEvent: EventListener) {
@@ -239,14 +329,12 @@ export function createMockDaemon(): DaemonApi {
       emit(t, "step_result", { step_id: s.id, index: s.index, status: "done", summary: simSummary(s) }, runId);
     }
     t.running = false;
-    emit(
-      t,
-      "final_result",
-      stopped
-        ? { status: "stopped", message: "Run stopped by the user. Remaining approved steps were not attempted.", attempted, completed }
-        : { status: "completed", message: "All approved steps were attempted.", attempted, completed },
-      runId,
-    );
+    const final = stopped
+      ? { status: "stopped" as const, message: "Run stopped by the user. Remaining approved steps were not attempted.", attempted, completed }
+      : { status: "completed" as const, message: "All approved steps were attempted.", attempted, completed };
+    const rec = t.runs.find((r) => r.id === runId);
+    if (rec) Object.assign(rec, { status: final.status, finished_at: new Date().toISOString(), final });
+    emit(t, "final_result", final, runId);
   }
 }
 

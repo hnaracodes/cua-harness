@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "preview": "vite preview",
     "tauri": "tauri",
-    "test": "node --test tests/*.test.mts"
+    "test": "node --test tests/*.test.mts",
+    "e2e": "playwright test"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.1",
@@ -18,6 +19,7 @@
     "react-dom": "^19.3.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@tauri-apps/cli": "^2.12.1",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",

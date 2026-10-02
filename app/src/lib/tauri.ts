@@ -14,3 +14,19 @@ export async function setAlwaysOnTop(on: boolean): Promise<void> {
     console.warn("setAlwaysOnTop failed", e);
   }
 }
+
+export interface SupervisorStatus {
+  state: "starting" | "running" | "restarting" | "failed" | "external";
+  restarts: number;
+  last_error: string | null;
+}
+
+/** Daemon supervisor status from the Rust shell. Null outside Tauri. (Track R1 implements.) */
+export async function daemonStatus(): Promise<SupervisorStatus | null> {
+  return null;
+}
+
+/** Last `lines` lines of daemon output captured by the shell. "" outside Tauri. (Track R1.) */
+export async function daemonLogTail(_lines: number): Promise<string> {
+  return "";
+}
