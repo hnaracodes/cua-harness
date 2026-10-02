@@ -332,6 +332,13 @@ class Store:
         self._x("UPDATE runs SET status=?, final=?, finished_at=? WHERE id=?",
                 (status, json.dumps(final), now_iso(), run_id))
 
+    def unfinished_runs(self) -> list[dict]:
+        """Runs with no finished_at: only possible when the daemon died mid-run."""
+        rows = self._q("SELECT id, task_id, removed FROM runs WHERE finished_at IS NULL "
+                       "ORDER BY started_at")
+        return [{"id": r["id"], "task_id": r["task_id"], "removed": json.loads(r["removed"])}
+                for r in rows]
+
     def get_runs(self, task_id: str) -> list[dict]:
         rows = self._q("SELECT * FROM runs WHERE task_id=? ORDER BY started_at", (task_id,))
         out = []

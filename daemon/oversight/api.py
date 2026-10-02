@@ -11,6 +11,7 @@ import json
 import logging
 import math
 import os
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -107,16 +108,76 @@ def _validate_boundary(b: BoundaryBody) -> str | None:
     return None
 
 
+# The app's own webview (macOS/Linux tauri://localhost, Windows http(s)://tauri.localhost)
+# and the Vite dev / Playwright servers on loopback. Nothing else may drive the daemon.
+APP_ORIGIN_REGEX = (r"^(tauri://localhost|https?://tauri\.localhost"
+                    r"|http://(localhost|127\.0\.0\.1)(:\d+)?)$")
+_APP_ORIGIN = re.compile(APP_ORIGIN_REGEX)
+
+
+class OriginGuard:
+    """403 for any request whose Origin header is present and is not the app. CORS alone
+    only hides responses: a "simple" cross-origin POST (or a form post) still reaches the
+    route and runs. Requests with no Origin (curl, scripts, tests) are allowed, so a curl
+    script keeps full capability."""
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: dict, receive: Any, send: Any) -> None:
+        if scope["type"] in ("http", "websocket"):
+            origins = [v.decode("latin-1") for k, v in scope.get("headers", [])
+                       if k.lower() == b"origin"]
+            if origins and not all(_APP_ORIGIN.fullmatch(o) for o in origins):
+                if scope["type"] == "websocket":
+                    await send({"type": "websocket.close", "code": 1008})
+                    return
+                await JSONResponse({"error": "origin not allowed"},
+                                   status_code=403)(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
+
+
+INTERRUPTED_MESSAGE = "The daemon restarted during this run."
+
+
+def close_interrupted_runs(store: Store) -> None:
+    """At startup, a run row with no finished_at was cut off by a restart (nothing can
+    still be driving it). Mark it failed and end its chat the way every run ends: a
+    run_recap, then a final_result, so the UI never shows a run that is forever running."""
+    from . import recap
+
+    for run in store.unfinished_runs():
+        task_id, run_id = run["task_id"], run["id"]
+        removed = set(run["removed"])
+        recap_steps = [{"id": s["id"], "index": s["index"], "title": s["title"],
+                        "removed": s["id"] in removed} for s in store.get_steps(task_id)]
+        results = {str(e["payload"].get("step_id")): e["payload"]
+                   for e in store.get_events(task_id)
+                   if e["run_id"] == run_id and e["kind"] == "step_result"}
+        final = {"status": "failed", "message": INTERRUPTED_MESSAGE,
+                 "attempted": [sid for sid, r in results.items()
+                               if r.get("status") in ("done", "failed", "stopped")],
+                 "completed": [sid for sid, r in results.items() if r.get("status") == "done"]}
+        store.finish_run(run_id, "failed", final)
+        store.append_event(task_id, run_id, "run_recap",
+                           recap.build_fallback_recap(recap_steps, results, final))
+        store.append_event(task_id, run_id, "final_result", final)
+
+
 def create_app(settings: Settings) -> FastAPI:
     store = Store(settings.db_path)
+    close_interrupted_runs(store)
     bus = EventBus(store)
     llm = None if settings.fixtures else StructuredLLM(settings.provider, settings.model)
     st = State(settings=settings, store=store, bus=bus, llm=llm)
 
     app = FastAPI(title="Sketch Oversight daemon")
     app.state.oversight = st
-    app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"],
-                       allow_headers=["*"], expose_headers=["*"])
+    app.add_middleware(CORSMiddleware, allow_origin_regex=APP_ORIGIN_REGEX,
+                       allow_methods=["*"], allow_headers=["*"], expose_headers=["*"])
+    # Added last, so it runs first: a foreign page is refused before CORS or any route.
+    app.add_middleware(OriginGuard)
 
     @app.exception_handler(RequestValidationError)
     async def _validation(_req: Request, exc: RequestValidationError):

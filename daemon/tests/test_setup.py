@@ -425,3 +425,98 @@ def test_review_focus_non_macos_and_no_keychain(client):
     assert client.post("/setup/permissions/open", json={"which": "accessibility"}).json() == {"ok": False}
     r = client.put("/setup/key", json={"provider": "anthropic", "key": "sk-new"}).json()
     assert r == {"ok": True, "error": None} and env.environ["ANTHROPIC_API_KEY"] == "sk-new"
+
+
+def test_put_key_for_other_provider_makes_it_active(tmp_path):
+    """Fresh machine: the daemon defaults to openai (no keys). Saving a tested Anthropic
+    key must make Anthropic the active provider, or the wizard stays stuck on openai."""
+    s = Settings(fixtures=False, exec_mode="simulated", provider="openai", model="gpt-5.5",
+                 data_dir=tmp_path)
+    with TestClient(create_app(s)) as c:
+        env, _ = make_env()
+        st = _use(c, env)
+        r = c.put("/setup/key", json={"provider": "anthropic", "key": "sk-ant-good"})
+        assert r.json() == {"ok": True, "error": None}
+        got = c.get("/setup/status").json()
+        assert got["key"]["provider"] == "anthropic"
+        assert got["key"]["present"] is True and got["key"]["tested"] is True
+        assert (s.provider, s.model) == ("anthropic", setup.MODELS["anthropic"][0])
+        assert s.api_key_present is True
+        assert st.store.get_setting("provider") == "anthropic"
+        assert st.store.get_setting("model") == setup.MODELS["anthropic"][0]
+        assert st.llm.provider == "anthropic" and st.llm.model == setup.MODELS["anthropic"][0]
+        assert c.get("/settings").json()["provider"] == "anthropic"
+
+
+def test_put_key_switch_reuses_stored_model_for_that_provider(tmp_path):
+    s = Settings(fixtures=False, exec_mode="simulated", provider="openai", model="gpt-5.5",
+                 data_dir=tmp_path)
+    with TestClient(create_app(s)) as c:
+        env, _ = make_env()
+        st = _use(c, env)
+        st.store.set_setting("model", "claude-opus-5-5")  # chosen earlier for anthropic
+        assert c.put("/setup/key", json={"provider": "anthropic", "key": "k"}).json()["ok"]
+        assert s.model == "claude-opus-5-5"
+
+
+def test_foreign_origin_is_refused_before_anything_runs(client):
+    """Any web page could otherwise POST to the daemon (a 'simple' cross-origin POST is
+    sent even when CORS hides the response). A foreign Origin gets 403 and nothing runs."""
+    env, calls = make_env(outputs={("/bin/bash", "-c"): (0, "installed\n", ""), **DRIVER_OK})
+    st = _use(client, env)
+    evil = {"Origin": "https://evil.example"}
+    r = client.post("/setup/driver/install", headers=evil)
+    assert r.status_code == 403 and r.json() == {"error": "origin not allowed"}
+    assert calls == []
+    r = client.put("/setup/key", headers=evil, json={"provider": "anthropic", "key": "sk-x"})
+    assert r.status_code == 403 and "ANTHROPIC_API_KEY" not in env.environ
+    r = client.put("/settings", headers=evil, json={"plan_only": True})
+    assert r.status_code == 403 and not st.store.get_setting("plan_only", False)
+    pre = client.options("/settings", headers={**evil, "Access-Control-Request-Method": "PUT"})
+    assert pre.status_code == 403
+    assert "access-control-allow-origin" not in pre.headers
+    # Look-alike origins are not the app.
+    for o in ("http://localhost.evil.example", "http://evil.example/?http://localhost",
+              "null", "tauri://localhost.evil"):
+        assert client.get("/health", headers={"Origin": o}).status_code == 403, o
+
+
+@pytest.mark.parametrize("origin", ["http://localhost:1420", "http://127.0.0.1:5173",
+                                    "tauri://localhost", "http://tauri.localhost",
+                                    "https://tauri.localhost", "http://localhost"])
+def test_app_origins_are_allowed_with_cors_headers(client, origin):
+    env, calls = make_env(outputs={("/bin/bash", "-c"): (0, "installed\n", ""), **DRIVER_OK})
+    _use(client, env)
+    r = client.post("/setup/driver/install", headers={"Origin": origin})
+    assert r.status_code == 200 and r.json()["ok"] is True
+    assert r.headers["access-control-allow-origin"] == origin
+    pre = client.options("/settings", headers={"Origin": origin,
+                                               "Access-Control-Request-Method": "PUT"})
+    assert pre.status_code == 200
+    assert pre.headers["access-control-allow-origin"] == origin
+
+
+def test_no_origin_keeps_full_capability(client):
+    """curl and scripts send no Origin: the daemon stays replaceable by a curl script."""
+    env, calls = make_env(outputs={("/bin/bash", "-c"): (0, "installed\n", ""), **DRIVER_OK})
+    _use(client, env)
+    assert client.post("/setup/driver/install").json()["ok"] is True
+    assert ["/bin/bash", "-c", setup.INSTALL_CMD] in calls
+    assert client.get("/health").status_code == 200
+
+
+def test_startup_keychain_warning_reaches_setup_status(tmp_path):
+    """Settings.keychain_warning (computed once at startup) shows in key.warning when
+    no newer warning exists; a live keychain failure is newer and wins."""
+    startup = "System keychain unavailable (RuntimeError); using environment keys."
+    s = Settings(fixtures=True, exec_mode="simulated", data_dir=tmp_path,
+                 keychain_warning=startup)
+    with TestClient(create_app(s)) as c:
+        _use(c, make_env()[0])
+        assert c.get("/setup/status").json()["key"]["warning"] == startup
+        _use(c, make_env(keyring=FakeKeyring(broken=True))[0])
+        assert c.get("/setup/status").json()["key"]["warning"] == setup.KEYCHAIN_WARNING
+    with TestClient(create_app(Settings(fixtures=True, exec_mode="simulated",
+                                        data_dir=tmp_path))) as c:
+        _use(c, make_env()[0])
+        assert c.get("/setup/status").json()["key"]["warning"] is None

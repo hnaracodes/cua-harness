@@ -70,6 +70,17 @@ def register(app: FastAPI, ctx: Ctx) -> None:
                 "plan_only": bool(st.store.get_setting("plan_only", False)),
                 "models": setup.models_for(s.provider, s.model)}
 
+    def model_for(provider: str) -> str:
+        """The model to use when `provider` becomes active: the current one if it already
+        is, else the stored model when it belongs to that provider, else its first model."""
+        s = st.settings
+        if provider == s.provider:
+            return s.model
+        stored = st.store.get_setting("model")
+        if isinstance(stored, str) and stored in setup.MODELS[provider]:
+            return stored
+        return setup.MODELS[provider][0]
+
     @app.get("/setup/status")
     async def setup_status():
         return await setup.status(env(), st.store, st.settings)
@@ -82,7 +93,7 @@ def register(app: FastAPI, ctx: Ctx) -> None:
         if not key:
             return {"ok": False, "error": "The key is empty."}
         s = st.settings
-        model = s.model if body.provider == s.provider else setup.MODELS[body.provider][0]
+        model = model_for(body.provider)
         ok, error, rec = await env().test_key(body.provider, key, model)
         if rec is not None:
             await ctx.record_call(None, None, rec)
@@ -92,9 +103,13 @@ def register(app: FastAPI, ctx: Ctx) -> None:
         tested = dict(st.store.get_setting("key_tested", {}) or {})
         tested[body.provider] = True
         st.store.set_setting("key_tested", tested)
-        if body.provider == s.provider:
-            s.api_key_present = True
-            _rebuild_llm(ctx)
+        # A tested key makes its provider the active one (a fresh machine defaults to
+        # openai; saving an Anthropic key must not leave the wizard pointing at openai).
+        s.provider, s.model = body.provider, model
+        s.api_key_present = True
+        st.store.set_setting("provider", body.provider)
+        st.store.set_setting("model", model)
+        _rebuild_llm(ctx)
         return {"ok": True, "error": None}
 
     @app.post("/setup/driver/install")
