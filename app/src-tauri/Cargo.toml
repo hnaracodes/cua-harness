@@ -1,6 +1,6 @@
 [package]
 name = "agent-oversight"
-version = "0.1.0"
+version = "0.2.0"
 description = "Sketch Oversight replica: Agent Oversight desktop shell"
 edition = "2021"
 
