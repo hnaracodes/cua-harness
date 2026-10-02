@@ -90,17 +90,53 @@ export const BoundaryCanvas = memo(function BoundaryCanvas(props: Props) {
   const toNorm = useCallback((px: Point): Point => [(px[0] - M.left) / pw, 1 - (px[1] - M.top) / ph], [pw, ph]);
 
   // Badge layout: RAW position + cosmetic jitter for display only.
+  // `anchor` is the true point (what classification uses). When several steps
+  // share nearly the same scores their badges would stack into one, so badges
+  // that collide are pushed apart deterministically and a leader line ties
+  // each displaced badge back to its true point. Display only: the approval
+  // test never reads `px`.
   const badges = useMemo(() => {
-    const out: { step: Step; raw: Point; px: Point }[] = [];
+    const out: { step: Step; raw: Point; anchor: Point; px: Point }[] = [];
     for (const s of steps) {
       const raw = rawPoint(idx, s.id, xDim.key, yDim.key);
       if (!raw) continue;
       const j = jitterFor(s.id);
       const shown = clampPoint([raw[0] + j[0], raw[1] + j[1]]);
-      out.push({ step: s, raw, px: toPx(shown) });
+      const anchor = toPx(clampPoint(raw));
+      out.push({ step: s, raw, anchor, px: toPx(shown) });
     }
+    const minD = 2 * BADGE_R + 3;
+    const lo: Point = [M.left + BADGE_R, M.top + BADGE_R];
+    const hi: Point = [M.left + pw - BADGE_R, M.top + ph - BADGE_R];
+    const pos = out.map((b) => [b.px[0], b.px[1]] as Point);
+    for (let iter = 0; iter < 60; iter++) {
+      let moved = false;
+      for (let a = 0; a < pos.length; a++) {
+        for (let b = a + 1; b < pos.length; b++) {
+          let dx = pos[b][0] - pos[a][0];
+          let dy = pos[b][1] - pos[a][1];
+          let d = Math.hypot(dx, dy);
+          if (d >= minD) continue;
+          if (d < 1e-3) {
+            const ang = (b * 2.39996) % (2 * Math.PI); // golden angle, deterministic
+            dx = Math.cos(ang); dy = Math.sin(ang); d = 1;
+          }
+          const push = (minD - d) / 2 + 0.25;
+          const ux = dx / d, uy = dy / d;
+          pos[a] = [pos[a][0] - ux * push, pos[a][1] - uy * push];
+          pos[b] = [pos[b][0] + ux * push, pos[b][1] + uy * push];
+          moved = true;
+        }
+      }
+      for (const p of pos) {
+        p[0] = Math.min(hi[0], Math.max(lo[0], p[0]));
+        p[1] = Math.min(hi[1], Math.max(lo[1], p[1]));
+      }
+      if (!moved) break;
+    }
+    out.forEach((b, i) => { b.px = pos[i]; });
     return out;
-  }, [steps, idx, xDim.key, yDim.key, toPx]);
+  }, [steps, idx, xDim.key, yDim.key, toPx, pw, ph]);
 
   const polyPx = useMemo(() => (polygon ? polygon.map(toPx) : null), [polygon, toPx]);
 
@@ -398,6 +434,18 @@ export const BoundaryCanvas = memo(function BoundaryCanvas(props: Props) {
             {hover?.kind === "edge" && !dragging && <path d={pathOf(polyPx, true)} className="poly-edge-hover" />}
           </>
         ) : null}
+
+        {/* leader lines: true point -> displaced badge */}
+        <g className="badge-leaders" pointerEvents="none">
+          {badges.map(({ step, anchor, px }) =>
+            Math.hypot(px[0] - anchor[0], px[1] - anchor[1]) > BADGE_R * 0.6 ? (
+              <g key={step.id}>
+                <line x1={anchor[0]} y1={anchor[1]} x2={px[0]} y2={px[1]} className="badge-leader" />
+                <circle cx={anchor[0]} cy={anchor[1]} r={2.6} className={`badge-anchor badge-anchor-${status[step.id] ?? "pending"}`} />
+              </g>
+            ) : null,
+          )}
+        </g>
 
         {/* badges */}
         <g>

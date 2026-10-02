@@ -20,16 +20,17 @@ export function WhyThisMattered({
   idx: ScoreIndex;
   dims: Dimension[];
 }) {
-  let subjects = removed;
+  const mean = (s: Step) => {
+    const m = idx.get(s.id);
+    if (!m || !m.size) return 0;
+    let t = 0;
+    m.forEach((sc) => (t += sc.position));
+    return t / m.size;
+  };
+  // Riskiest removed step first, so the step that most needed oversight leads.
+  let subjects = [...removed].sort((a, b) => mean(b) - mean(a) || a.index - b.index);
   let riskiest = false;
   if (!subjects.length && approved.length) {
-    const mean = (s: Step) => {
-      const m = idx.get(s.id);
-      if (!m || !m.size) return 0;
-      let t = 0;
-      m.forEach((sc) => (t += sc.position));
-      return t / m.size;
-    };
     subjects = [approved.reduce((a, b) => (mean(b) > mean(a) ? b : a))];
     riskiest = true;
   }

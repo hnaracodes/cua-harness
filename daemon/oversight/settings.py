@@ -4,8 +4,6 @@ also checking testing/.env at each level."""
 from __future__ import annotations
 
 import os
-import shutil
-import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -26,24 +24,47 @@ def find_env_file(start: Path = DAEMON_DIR) -> Path | None:
     return None
 
 
-def cua_driver_status() -> tuple[bool, str]:
-    """(available, word for the status line)."""
-    path = shutil.which("cua-driver")
-    if path is None:
-        for p in ("/usr/local/bin/cua-driver", str(Path.home() / ".local/bin/cua-driver"),
-                  "/opt/homebrew/bin/cua-driver"):
-            if Path(p).exists():
-                path = p
-                break
-    if path is None:
-        return False, "not found"
-    try:
-        r = subprocess.run(["pgrep", "-f", "cua-driver"], capture_output=True, timeout=2)
-        if r.returncode == 0:
-            return True, "running"
-    except Exception:
-        pass
-    return True, "installed"
+_CUA_CACHE: dict[str, object] = {"at": 0.0, "value": None}
+_CUA_TTL_S = 8.0
+
+
+async def cua_driver_status(force: bool = False) -> tuple[bool, str, str]:
+    """(usable, word for the status line, detail).
+
+    Truthful: usable only when the cua-driver binary exists, its daemon is
+    running, AND a harmless call (get_cursor_position) succeeds, which needs the
+    macOS Accessibility and Screen Recording grants. Cached for a few seconds
+    because the UI polls /health."""
+    import time
+
+    from .cua import CuaDriver, find_binary
+
+    now = time.monotonic()
+    cached = _CUA_CACHE["value"]
+    if not force and cached is not None and now - float(_CUA_CACHE["at"]) < _CUA_TTL_S:
+        return cached  # type: ignore[return-value]
+    binary = find_binary()
+    if binary is None:
+        value = (False, "not found", "cua-driver is not installed")
+    else:
+        drv = CuaDriver(binary=binary, timeout_s=5.0)
+        try:
+            if not await drv.daemon_running():
+                value = (False, "not running",
+                         "cua-driver daemon not running (start: open -n -g -a CuaDriver --args serve)")
+            else:
+                ok, detail = await drv.ready()
+                if ok:
+                    value = (True, "running", "ok")
+                elif "permission" in detail.lower():
+                    value = (False, "permissions pending", detail)
+                else:
+                    value = (False, "not ready", detail)
+        except Exception as e:  # never let a probe break /health
+            value = (False, "error", f"{type(e).__name__}: {e}")
+    _CUA_CACHE["at"] = now
+    _CUA_CACHE["value"] = value
+    return value
 
 
 @dataclass

@@ -539,6 +539,24 @@ html.tauri body {
 .handle.active {
   fill: #fff;
 }
+.badge-leader {
+  stroke: rgba(255, 255, 255, 0.45);
+  stroke-width: 1;
+  stroke-dasharray: 2 2;
+}
+.badge-anchor {
+  stroke: rgba(255, 255, 255, 0.85);
+  stroke-width: 0.8;
+}
+.badge-anchor-approved {
+  fill: var(--approved);
+}
+.badge-anchor-pending {
+  fill: var(--pending);
+}
+.badge-anchor-removed {
+  fill: rgba(220, 220, 220, 0.5);
+}
 .badge-ring {
   fill: none;
   stroke: #fff;

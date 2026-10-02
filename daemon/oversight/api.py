@@ -137,13 +137,18 @@ def create_app(settings: Settings) -> FastAPI:
 
     @app.get("/health")
     async def health():
-        cua_ok, cua_word = cua_driver_status()
+        cua_ok, cua_word, cua_detail = await cua_driver_status()
         model = settings.display_model
         key_word = "API key found" if settings.api_key_present else "API key missing"
         if settings.fixtures:
             status_line = f"Ready. cua-driver {cua_word}, {key_word}, fixtures mode (no API calls)."
         else:
             status_line = f"Ready. cua-driver {cua_word}, {key_word}, model {model}."
+        if settings.exec_mode == "live" and not cua_ok:
+            status_line = (f"Live execution blocked: cua-driver {cua_word}. "
+                           f"{key_word}, model {model}. Planning and scoring still work.")
+        elif settings.exec_mode == "simulated":
+            status_line = status_line[:-1] + ", simulated executor."
         return {
             "daemon": "ok",
             "api_key": settings.api_key_present,
@@ -151,6 +156,7 @@ def create_app(settings: Settings) -> FastAPI:
             "model": model,
             "cua_driver": cua_ok,
             "fixtures": settings.fixtures,
+            "cua_driver_detail": cua_detail,
             "exec_mode": settings.exec_mode,
             "cost_usd_total": st.session_cost,
             "cost_usd_all_time": store.total_cost(),
@@ -372,6 +378,13 @@ def create_app(settings: Settings) -> FastAPI:
             for b in boundaries:
                 store.put_boundary(task_id, b["x_dim"], b["y_dim"], b["polygon"])
 
+        if settings.exec_mode == "live":
+            cua_ok, cua_word, cua_detail = await cua_driver_status(force=True)
+            if not cua_ok:
+                return err(503, f"live executor unavailable: cua-driver {cua_word}. Nothing ran. "
+                                "Grant CuaDriver Accessibility and Screen Recording, or start "
+                                "the daemon with --exec simulated.", detail=cua_detail)
+
         removed_steps = [s for s in steps if statuses[s["id"]] == "removed"]
         approved_steps = [s for s in steps if statuses[s["id"]] == "approved"]
         approved_ids = frozenset(s["id"] for s in approved_steps)
@@ -407,7 +420,8 @@ def create_app(settings: Settings) -> FastAPI:
         st.active_runs[task_id] = active
         config = executor.ExecConfig(
             mode=settings.exec_mode, provider=settings.provider,
-            model=os.environ.get("OVERSIGHT_EXEC_MODEL") or settings.model)
+            # The executor has its own default (claude-opus-5-5); OVERSIGHT_EXEC_MODEL overrides.
+            model=os.environ.get("OVERSIGHT_EXEC_MODEL") or executor.DEFAULT_MODEL)
         active.task = asyncio.create_task(
             _drive(task_id, run_id, task["prompt"], exec_steps, approved_ids, stop, config))
         return {"run_id": run_id}
