@@ -682,6 +682,10 @@ class LiveRunner:
             self.seq += 1
             turn = Turn(step_index=step.index, seq=self.seq, png=ws.png)
             rs.turns.append(turn)
+            if ws.png:
+                # The exact window-scoped capture the model is about to see. The daemon
+                # converts it to JPEG for the desk view; the bytes never enter the event log.
+                await rs.emit("frame", {"step_id": step.id, "png": ws.png})
             pixel = (force_pixel or not ws.elements) and not self.browser
             req = build_request(rs, step, ws, pixel, nudge, browser=self.browser, app=self.app)
             nudge = None

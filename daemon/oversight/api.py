@@ -510,11 +510,28 @@ def create_app(settings: Settings) -> FastAPI:
     async def _drive(task_id: str, active: ActiveRun, prompt: str, exec_steps: list,
                      approved_ids: frozenset[str], config: Any, removed_steps: list[dict],
                      step_count: int) -> None:
+        from .routes.frames import save_frame_jpeg
+
         run_id, stop = active.run_id, active.stop
         saw_final: dict | None = None
+        frame_n = 0
 
         async def emit(kind: str, payload: dict) -> None:
-            nonlocal saw_final
+            nonlocal saw_final, frame_n
+            if kind == "frame":
+                png = payload.get("png")
+                if not isinstance(png, (bytes, bytearray)) or not png:
+                    return
+                frame_n += 1
+                dest = settings.data_dir / "frames" / task_id / f"{run_id}_{frame_n}.jpg"
+                try:
+                    await asyncio.to_thread(save_frame_jpeg, bytes(png), dest)
+                except Exception:
+                    log.warning("dropping an undecodable frame for task %s", task_id, exc_info=True)
+                    return
+                step_id = str(payload.get("step_id", ""))
+                seq = store.add_frame(task_id, run_id, step_id, str(dest))
+                payload = {"step_id": step_id, "seq": seq}
             if kind == "cost":
                 rec = CallRecord(
                     scope=payload.get("scope", "run"), provider=config.provider,
