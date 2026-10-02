@@ -92,18 +92,30 @@ async def chrome_pids_for_profile(profile_dir: str | None) -> list[int]:
 
 
 def pick_window(windows: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """Pick the browser window: frontmost z_index among real-sized windows."""
+    """Pick the browser window among a Chrome process's windows.
+
+    Chrome also owns off-screen, untitled helper surfaces (500x500, 1118x139,
+    1728x33, 1x1) that can sit above the real window in z-order. Picking one
+    makes captures blank and input fail with ``off_space_or_ax_unresolved``.
+    A browser window is real-sized, on layer 0, and either on screen or
+    titled; on-screen windows win, then the frontmost z_index."""
     real = []
     for w in windows:
         b = w.get("bounds") or {}
-        if (b.get("width") or 0) >= 300 and (b.get("height") or 0) >= 200:
-            real.append(w)
+        if (b.get("width") or 0) < 300 or (b.get("height") or 0) < 200:
+            continue
+        if w.get("layer") not in (None, 0):
+            continue
+        if w.get("is_on_screen") is not True and not (w.get("title") or "").strip():
+            continue
+        real.append(w)
     if not real:
         return None
-    with_z = [w for w in real if isinstance(w.get("z_index"), int)]
-    if with_z:
-        return max(with_z, key=lambda w: w["z_index"])
-    return max(real, key=lambda w: (w["bounds"]["width"] * w["bounds"]["height"]))
+    return max(real, key=lambda w: (
+        w.get("is_on_screen") is True,
+        w["z_index"] if isinstance(w.get("z_index"), int) else -1,
+        w["bounds"]["width"] * w["bounds"]["height"],
+    ))
 
 
 @dataclass
