@@ -1,0 +1,17 @@
+.screen { display: flex; height: 100%; min-height: 0; }
+.chat { width: var(--chat-w); flex: none; display: flex; flex-direction: column; border-right: 1px solid var(--line); min-height: 0; }
+.dock { padding: 12px 16px 16px; }
+.workspace { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
+.head { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+.title { font-weight: 600; }
+.seg { margin-left: auto; display: flex; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 2px; font-size: var(--fs-xs); }
+.seg button { border: none; background: none; padding: 3px 9px; border-radius: 6px; color: var(--text-3); cursor: pointer; }
+.seg .segOn { background: var(--raised); color: var(--text); }
+.canvas { flex: 1; min-height: 260px; margin: 12px 16px 10px; position: relative; }
+.preparing { height: 100%; display: flex; align-items: center; justify-content: center; gap: 14px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); }
+.spinner { width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--line); border-top-color: var(--accent); animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.prepTitle { font-weight: 600; }
+.prepSub { color: var(--text-3); font-size: var(--fs-sm); }
+.bar { margin-top: 8px; width: 240px; height: 4px; border-radius: 2px; background: var(--raised); overflow: hidden; }
+.bar i { display: block; height: 100%; background: var(--ok); transition: width var(--dur) var(--ease); }
