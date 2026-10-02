@@ -8,7 +8,7 @@ import { classify, indexScores, pairKey, splitPairKey } from "../lib/approval";
 import type { PolygonMap } from "../lib/approval";
 import type { DaemonApi, EventListener } from "./client";
 import { HttpError } from "./errors";
-import { FIXTURE_DIMENSIONS, FIXTURE_MODEL, FIXTURE_STEPS } from "./fixtures";
+import { FIXTURE_DIMENSIONS, FIXTURE_MODEL, FIXTURE_STEPS, syntheticCells } from "./fixtures";
 import type {
   AppSettings,
   Attachment,
@@ -48,6 +48,16 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const rid = (p: string) => `${p}_${Math.random().toString(36).slice(2, 10)}`;
 
 export function createMockDaemon(): DaemonApi {
+  const q = typeof location !== "undefined" ? new URLSearchParams(location.search) : new URLSearchParams();
+  const MODE = {
+    fast: q.has("fast"),
+    setup: q.has("setup"),
+    nonmac: q.has("nonmac"),
+    down: q.get("down") === "1",
+    many: q.has("many") ? Math.min(60, Math.max(6, Number(q.get("many")) || 6)) : 0,
+  };
+  const ms = (n: number) => (MODE.fast ? Math.max(10, Math.round(n / 10)) : n);
+  const ACTION_MS = MODE.fast ? 60 : 650;
   const tasks = new Map<string, MockTask>();
   const blobs = new Map<string, { att: Attachment; url: string }>();
   const settings: AppSettings = {
@@ -89,7 +99,7 @@ export function createMockDaemon(): DaemonApi {
     return t;
   };
 
-  return {
+  const api: DaemonApi = {
     mode: "mock",
     baseUrl: "mock://in-browser",
 
@@ -130,11 +140,17 @@ export function createMockDaemon(): DaemonApi {
 
     async plan(taskId: string): Promise<PlanResponse> {
       const t = getTask(taskId);
-      const total = FIXTURE_STEPS.length;
+      const n = MODE.many || FIXTURE_STEPS.length;
+      const specs = Array.from({ length: n }, (_, i) =>
+        i < FIXTURE_STEPS.length
+          ? FIXTURE_STEPS[i]
+          : { title: `Extra step ${Math.floor((i - FIXTURE_STEPS.length) / 2) + 1}`, description: "Synthetic step for crowding (?many).", glyph: "generic" as const, cells: syntheticCells(`Extra step ${Math.floor((i - FIXTURE_STEPS.length) / 2) + 1}`) },
+      );
+      const total = n;
       emit(t, "plan_progress", { stage: "planning", message: "Generating a high-level plan for the task.", done: 0, total });
-      await sleep(1100);
+      await sleep(ms(1100));
       cost(t, "plan", 812, 640, 1100);
-      t.steps = FIXTURE_STEPS.map((s, i) => ({
+      t.steps = specs.map((s, i) => ({
         id: `stp_${taskId.slice(4)}_${i + 1}`,
         task_id: taskId,
         index: i + 1,
@@ -148,9 +164,9 @@ export function createMockDaemon(): DaemonApi {
       emit(t, "plan_progress", { stage: "scoring", message: `${total} step(s). Scoring actions and placing them on the grid.`, done: 0, total });
       t.scores = [];
       for (let i = 0; i < total; i++) {
-        await sleep(320);
+        await sleep(ms(320));
         const st = t.steps[i];
-        FIXTURE_STEPS[i].cells.forEach(([li, off, rationale], d) => {
+        specs[i].cells.forEach(([li, off, rationale], d) => {
           const dim = FIXTURE_DIMENSIONS[d];
           const n = dim.labels.length;
           t.scores.push({
@@ -290,6 +306,15 @@ export function createMockDaemon(): DaemonApi {
       return () => t.listeners.delete(onEvent);
     },
   };
+  if (typeof window !== "undefined") {
+    (window as unknown as Record<string, unknown>).__oversightMock = {
+      api,
+      setDown: (v: boolean) => {
+        MODE.down = v;
+      },
+    };
+  }
+  return api;
 
   async function simulateRun(t: MockTask, runId: string, approved: Set<string>, removed: Set<string>) {
     const steps = t.steps.filter((s) => approved.has(s.id));
@@ -311,14 +336,14 @@ export function createMockDaemon(): DaemonApi {
       const script = simActions(s);
       let halted = false;
       for (const a of script) {
-        await sleep(650);
+        await sleep(ACTION_MS);
         if (t.stop) {
           halted = true;
           break;
         }
         n += 1;
         emit(t, "action", { step_id: s.id, n, mode: "sim", verb: a[0], target: a[1], detail: a[2], ok: true, error: null }, runId);
-        cost(t, "run", 2100, 180, 650, runId);
+        cost(t, "run", 2100, 180, ACTION_MS, runId);
       }
       if (halted) {
         emit(t, "step_result", { step_id: s.id, index: s.index, status: "stopped", summary: "Stopped by the user." }, runId);
